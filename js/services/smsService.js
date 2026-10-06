@@ -20,6 +20,29 @@ export function templateFor(type) {
   return CFG.messages[t];
 }
 
+export const STATE_TEMPLATES = [
+  { key: 'auto', label: '📡 حسب حالة المحددين (تلقائي)' },
+  { key: 'none', label: '🔴 لم يرسلوا أي برنامج' },
+  { key: 'planning', label: '🟠 أرسلوا التخطيط فقط' },
+  { key: 'actual', label: '🔵 أرسلوا الفعلي فقط' },
+  { key: 'complete', label: '🟢 مكتمل (أرسلوا الاثنين)' },
+  { key: 'both', label: '⚪ التخطيطي/الفعلي (رسالة عامة)' },
+];
+
+export function stateTemplateKey(stateSel, rows) {
+  if (stateSel && stateSel !== 'auto') return stateSel;
+  if (!rows || !rows.length) return 'both';
+  const complete = rows.every((r) => r.status && r.status.key === 'both');
+  if (complete) return 'complete';
+  const none = rows.every((r) => r.status && r.status.key === 'none');
+  if (none) return 'none';
+  const missPlan = rows.some((r) => !r.sentPlanning);
+  const missAct = rows.some((r) => !r.sentActual);
+  if (missPlan && !missAct) return 'planning';
+  if (missAct && !missPlan) return 'actual';
+  return 'both';
+}
+
 export function buildMessage(template, ctx) {
   const week = ctx.week ? (ctx.week.label || '') : '';
   return String(template || '')

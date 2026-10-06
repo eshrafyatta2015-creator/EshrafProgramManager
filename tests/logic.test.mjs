@@ -14,6 +14,7 @@ globalThis.localStorage = {
 };
 
 const { CFG } = await import('../js/config.js');
+const { ARCHIVE_SHEET_URL, RESPONSES_SHEET_URL, MASTER_DATA_SHEET_URL } = await import('../js/config.js');
 const U = await import('../js/utils.js');
 const M = await import('../js/models.js');
 const SS = await import('../js/services/sheetsService.js');
@@ -22,6 +23,7 @@ const SMS = await import('../js/services/smsService.js');
 const EX = await import('../js/services/exportService.js');
 const RP = await import('../js/services/reportService.js');
 const LOG = await import('../js/services/logService.js');
+const AS = await import('../js/services/archiveService.js');
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra) => {
@@ -39,12 +41,14 @@ const [listsTxt, adminTxt, programsTxt] = await Promise.all([
 const lists = M.parseListsCsv(listsTxt);
 const admin = M.parseAdminCsv(adminTxt);
 const programs = M.parseProgramsCsv(programsTxt);
-const master = M.buildMasterSupervisors(lists, admin.records, programs.records);
+const master = M.masterFromLists(lists);
+const unionMaster = M.buildMasterSupervisors(lists, admin.records, programs.records);
 const weeks = M.allWeeks(admin.weeks, programs.headerWeek, programs.records);
 const records = admin.records.concat(programs.records);
 
-/* 1) تحميل المشرفين */
-ok('1. تحميل المشرفين', master.length >= 30 && master.every((s) => s.name), master.length + ' مشرف');
+/* 1) تحميل المشرفين (من الملف المرجعي فقط) */
+ok('1. تحميل المشرفين', master.length === lists.supervisors.length && master.length >= 30 && master.every((s) => s.name),
+  master.length + ' مشرف (مرجعي) / دمج سابق=' + unionMaster.length);
 
 /* 2) تحميل المدارس */
 ok('2. تحميل المدارس', lists.schools.length >= 100, lists.schools.length + ' مدرسة');
@@ -184,6 +188,7 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
     summary: st.stats,
     statusRows: st.rows,
     detailRows: RP.flattenDetail(records.filter((r) => r.weekStart === wk.start)).slice(0, 50),
+    migratedRows: RP.flattenDetail(records.filter((r) => r.weekStart === wk.start).slice(0, 3)),
     planningRows: records.filter((r) => r.weekStart === wk.start && r.type === CFG.typePlanning),
     actualRows: records.filter((r) => r.weekStart === wk.start && r.type === CFG.typeActual),
   };
@@ -193,7 +198,7 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
     const bytes = new Uint8Array(buf);
     const isZip = bytes[0] === 0x50 && bytes[1] === 0x4B;
     ok('17. تصدير Excel (ملف xlsx حقيقي)',
-      wb.SheetNames.length === 5 && isZip && bytes.length > 3000,
+      wb.SheetNames.length === 6 && wb.SheetNames.includes('المرحّل') && isZip && bytes.length > 3000,
       'sheets=' + wb.SheetNames.join(',') + ' size=' + bytes.length);
   } catch (e) {
     ok('17. تصدير Excel (ملف xlsx حقيقي)', false, String(e));
@@ -265,6 +270,102 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
   ok('22. بيانات ناقصة/معطوبة',
     p.records.length <= 2 && a.records.length <= 1 && st.rows.length === master.length,
     'programs=' + p.records.length + ' admin=' + a.records.length);
+}
+
+/* 23) فصل المصادر الثلاثة في الإعدادات المركزي */
+{
+  ok('23. فصل مصادر البيانات الثلاثة',
+    CFG.sheets.admin === ARCHIVE_SHEET_URL &&
+    CFG.sheets.programs === RESPONSES_SHEET_URL &&
+    CFG.sheets.lists === MASTER_DATA_SHEET_URL &&
+    CFG.sheets.admin.includes('1rthlma') &&
+    CFG.sheets.programs.includes('16Sw_4Tj') &&
+    CFG.sheets.lists.includes('1P2X7VK') &&
+    new Set([CFG.sheets.admin, CFG.sheets.programs, CFG.sheets.lists]).size === 3,
+    'أرشيف/ردود/مرجعي منفصلة');
+}
+
+/* 24) قائمة المتابعة من الملف المرجعي فقط + كشف اليتيمة دون حذف */
+{
+  const tracking = M.masterFromLists(lists);
+  const orphans = M.findOrphanSupervisors(tracking, records);
+  ok('24. قائمة المشرفيين من الملف المرجعي فقط',
+    tracking.length === lists.supervisors.length &&
+    tracking.every((s) => lists.supervisors.some((l) => l.name === s.name)),
+    tracking.length + ' مشرف');
+  ok('24b. كشف السجلات اليتيمة (دون حذف)',
+    Array.isArray(orphans) &&
+    orphans.length === unionMaster.length - tracking.length &&
+    orphans.every((o) => !tracking.some((t) => t.nameNorm === o.nameNorm) && o.count > 0),
+    'يتيمة=' + orphans.length + ' أسماء · سجلات=' + orphans.reduce((a, o) => a + o.count, 0));
+  ok('24c. السجلات اليتيمة باقية ولا تُحذف',
+    records.length === admin.records.length + programs.records.length &&
+    orphans.every((o) => records.some((r) => (r.supervisorNorm || U.normName(r.supervisor)) === o.nameNorm)),
+    records.length + ' سجل كامل');
+}
+
+/* 25) الفلاتر السبعة */
+{
+  ok('25. الفلاتر السبعة',
+    CFG.statusFilters.length === 7 &&
+    CFG.statusFilters.map((x) => x.key).join(',') === 'all,planning,notPlanning,actual,notActual,complete,incomplete',
+    CFG.statusFilters.length + ' فلاتر');
+  const st = ST.computeStatus(master, records, weeks[0], {});
+  const c = {};
+  for (const f of CFG.statusFilters.map((x) => x.key)) c[f] = ST.filterRows(st.rows, { filter: f }).length;
+  const both = st.rows.filter((r) => r.sentPlanning && r.sentActual).length;
+  ok('25b. منطق الفلاتر',
+    c.all === st.rows.length &&
+    c.planning === st.rows.filter((r) => r.sentPlanning).length &&
+    c.notPlanning === c.all - c.planning &&
+    c.actual === st.rows.filter((r) => r.sentActual).length &&
+    c.notActual === c.all - c.actual &&
+    c.complete === both && c.incomplete === c.all - both &&
+    c.planning + c.notPlanning === c.all && c.actual + c.notActual === c.all,
+    JSON.stringify(c));
+}
+
+/* 26) رسائل SMS حسب الحالة */
+{
+  const mk = (p, a) => ({ sentPlanning: p, sentActual: a, status: ST.statusOf(p, a) });
+  ok('26. قوالب رسائل الحالة',
+    CFG.messages.none.includes('{الاسبوع}') && CFG.messages.complete.includes('{الاسبوع}') &&
+    CFG.messages.none !== CFG.messages.both && CFG.messages.complete !== CFG.messages.both &&
+    SMS.stateTemplateKey('none', null) === 'none' && SMS.stateTemplateKey('complete', null) === 'complete',
+    'none/complete متاحة');
+  ok('26b. الاختيار التلقائي حسب حالة المحددين',
+    SMS.stateTemplateKey('auto', []) === 'both' &&
+    SMS.stateTemplateKey('auto', [mk(0, 0), mk(0, 0)]) === 'none' &&
+    SMS.stateTemplateKey('auto', [mk(1, 1), mk(1, 1)]) === 'complete' &&
+    SMS.stateTemplateKey('auto', [mk(1, 0), mk(1, 0)]) === 'actual' &&
+    SMS.stateTemplateKey('auto', [mk(0, 1), mk(0, 1)]) === 'planning' &&
+    SMS.stateTemplateKey('auto', [mk(1, 0), mk(0, 1)]) === 'both',
+    'auto→none/complete/actual/planning/both');
+}
+
+/* 27) الترحيل: معاينة + منع التكرار + غياب الرابط */
+{
+  const fakeData = { master, records, admin, weeks };
+  const wk = weeks[0];
+  const pv = AS.buildMigratePreview(fakeData, wk);
+  ok('27. معاينة الترحيل',
+    pv && pv.week.start === wk.start &&
+    pv.masterCount === master.length &&
+    pv.responses === pv.kept + pv.orphans.length &&
+    pv.skipped >= 0 &&
+    pv.plan.rows.length === pv.kept + (pv.needsHeader ? 1 : 0) &&
+    pv.types !== undefined,
+    'جديد=' + pv.kept + ' مكرر=' + pv.skipped + ' يتيمة=' + pv.orphans.length + ' رأس=' + pv.needsHeader);
+
+  const fakePreview = { plan: { rows: [[CFG.magicHeader], ['اختبار']] }, marker: 'اختبار', kept: 1, week: wk };
+  const run = await AS.executeMigration({ preview: fakePreview, week: wk, appsScriptUrl: '' });
+  ok('27b. تنفيذ بدون رابط Apps Script = رفض صريح',
+    run.ok === false && run.code === 'NOT_CONFIGURED' && run.week === wk,
+    run.code);
+
+  const hist = AS.migrationHistoryRows(10);
+  ok('27c. سجل عمليات الترحيل', Array.isArray(hist) && hist.every((r) => r.length === 2),
+    hist.length + ' سجل');
 }
 
 /* سجل العمليات + أدوات */

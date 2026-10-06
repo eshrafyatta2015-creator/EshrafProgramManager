@@ -10,6 +10,7 @@ import * as dashboard from './dashboard.js';
 import * as supervisors from './supervisors.js';
 import * as details from './details.js';
 import * as sms from './sms.js';
+import * as migrate from './migrate.js';
 import * as reports from './reports.js';
 import * as settings from './settings.js';
 
@@ -30,7 +31,8 @@ export const App = {
   tab: 'dashboard',
   filters: { filter: 'all', query: '' },
   reportFilters: {},
-  detailSel: { supNorm: '', from: '', to: '', mode: 'both', submitted: false },
+  detailSel: { supNorm: '', from: '', to: '', mode: 'both', type: '', submitted: false },
+  migrateWeekStart: '',
   lastError: null,
 };
 
@@ -39,6 +41,7 @@ const TABS = {
   supervisors,
   details,
   sms,
+  migrate,
   reports,
   settings,
 };
@@ -73,7 +76,11 @@ export function requireAdmin(actionLabel) {
 
 export function templateFor(type) {
   const key = type === CFG.typePlanning ? 'planning' : type === CFG.typeActual ? 'actual' : 'both';
-  return App.settings.templates[key] || CFG.messages[key];
+  return templateForKey(key);
+}
+
+export function templateForKey(key) {
+  return App.settings.templates[key] || CFG.messages[key] || CFG.messages.both;
 }
 
 export function saveTemplate(key, text) {

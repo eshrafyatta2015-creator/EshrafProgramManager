@@ -138,6 +138,13 @@ code { background: #eef2f8; padding: 1px 6px; border-radius: 6px; font-size: .85
   padding: 9px 22px;
   font-size: 13.5px;
 }
+.orphan-banner {
+  border: 1px solid #f5d9a8;
+  border-bottom: 1px solid #f5d9a8;
+  border-radius: 10px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+}
 
 /* ---------- tabs ---------- */
 .tabs {

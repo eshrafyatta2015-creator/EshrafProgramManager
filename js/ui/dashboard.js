@@ -11,6 +11,8 @@ export function render(root, app) {
   const missing = st.rows.filter((r) => !r.sentPlanning && !r.sentActual);
   const missingPlanning = st.rows.filter((r) => !r.sentPlanning);
   const missingActual = st.rows.filter((r) => !r.sentActual);
+  const complete = st.rows.filter((r) => r.sentPlanning && r.sentActual).length;
+  const incomplete = s.total - complete;
 
   root.innerHTML =
     '<div class="dash-title">' +
@@ -24,6 +26,8 @@ export function render(root, app) {
       statCard({ icon: '⛔', label: 'لم يرسلوا التخطيط', value: s.notPlanning, cls: 'card-missing' }) +
       statCard({ icon: '🔵', label: 'أرسلوا الفعلي', value: s.actual, cls: 'card-actual' }) +
       statCard({ icon: '⛔', label: 'لم يرسلوا الفعلي', value: s.notActual, cls: 'card-missing' }) +
+      statCard({ icon: '🟢', label: 'مكتمل (التخطيط والفعلي)', value: complete, cls: 'card-rate' }) +
+      statCard({ icon: '🔴', label: 'غير مكتمل', value: incomplete, cls: 'card-missing' }) +
       statCard({ icon: '📈', label: 'نسبة الإنجاز', value: s.completion + '%', cls: 'card-rate', sub: '(تخطيط+فعلي ÷ المطلوب)' }) +
     '</div>' +
     '<div class="progress-wrap"><div class="progress"><div class="progress-bar" style="width:' +

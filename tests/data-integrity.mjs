@@ -1,4 +1,4 @@
-import { parseListsCsv, parseAdminCsv, parseProgramsCsv, buildMasterSupervisors, allWeeks, defaultWeek } from '../js/models.js';
+import { parseListsCsv, parseAdminCsv, parseProgramsCsv, buildMasterSupervisors, masterFromLists, findOrphanSupervisors, allWeeks, defaultWeek } from '../js/models.js';
 import { computeStatus } from '../js/services/statusService.js';
 import { CFG } from '../js/config.js';
 
@@ -24,13 +24,18 @@ console.log('PROGRAMS: headerWeek=%s records=%d types=%j',
   programs.records.length,
   programs.records.reduce((a, r) => { a[r.type || 'null'] = (a[r.type || 'null'] || 0) + 1; return a; }, {}));
 
-const master = buildMasterSupervisors(lists, admin.records, programs.records);
-console.log('MASTER supervisors:', master.length, '| with ID:', master.filter((s) => s.id).length);
+const master = masterFromLists(lists);
+const union = buildMasterSupervisors(lists, admin.records, programs.records);
+console.log('MASTER (reference-only):', master.length, '| with ID:', master.filter((s) => s.id).length);
+console.log('UNION (legacy, lists+archive+responses):', union.length);
 
 const weeks = allWeeks(admin.weeks, programs.headerWeek, programs.records);
 console.log('ALL WEEKS:', weeks.length, '| default:', JSON.stringify(defaultWeek(weeks)));
 
 const records = admin.records.concat(programs.records);
+const orphans = findOrphanSupervisors(master, records);
+console.log('ORPHANS (outside reference list, never deleted):', orphans.length,
+  JSON.stringify(orphans.map((o) => ({ n: o.name, records: o.count, weeks: o.weeks }))));
 
 const cur = weeks.find((w) => w.label === '4/10-10/10');
 const stCur = computeStatus(master, records, cur, {});

@@ -3,11 +3,12 @@
 import { CFG } from '../config.js';
 import { escapeHtml } from '../utils.js';
 import { showModal, confirmModal, toast, emptyState } from './components.js';
-import { SMS_PROVIDERS, buildMessage, resolveRecipients, send, confirmText, typeLabel, templateFor } from '../services/smsService.js';
+import { SMS_PROVIDERS, buildMessage, resolveRecipients, send, confirmText, typeLabel, STATE_TEMPLATES, stateTemplateKey } from '../services/smsService.js';
 import { logAdd } from '../services/logService.js';
-import { App, templateFor as appTemplateFor, saveTemplate, go } from './app.js';
+import { App, templateForKey, saveTemplate, go } from './app.js';
 
 let local = {
+  state: 'auto',
   type: CFG.typePlanning,
   mode: 'selected',
   provider: 'device',
@@ -15,16 +16,37 @@ let local = {
   query: '',
 };
 
+function keyOfState(state) {
+  return state === CFG.typePlanning ? 'planning' : state === CFG.typeActual ? 'actual' : state;
+}
+
+function typeOfKey(key) {
+  return key === 'planning' ? CFG.typePlanning : key === 'actual' ? CFG.typeActual : 'both';
+}
+
+function resolveKey(state, rows) {
+  return state === 'auto' ? stateTemplateKey('auto', rows) : keyOfState(state);
+}
+
+let lastResolvedKey = null;
+
 export function render(root, app) {
   if (App.smsPrefill) {
     local.mode = App.smsPrefill.mode || local.mode;
     App.smsPrefill = null;
   }
-  if (!local.body) local.body = appTemplateFor(local.type);
-  local.provider = app.settings.smsProvider || local.provider;
 
   const allRows = app.status.rows;
   const selectedRows = allRows.filter((r) => app.selected.has(r.nameNorm));
+  const targetRows = local.mode === 'all' ? allRows : selectedRows;
+  const resolved = resolveKey(local.state, targetRows);
+  local.type = typeOfKey(resolved);
+  if (!local.body || resolved !== lastResolvedKey) {
+    local.body = templateForKey(resolved);
+    lastResolvedKey = resolved;
+  }
+  local.provider = app.settings.smsProvider || local.provider;
+
   const listRows = local.query
     ? allRows.filter((r) => r.nameNorm.includes(local.query))
     : allRows;
@@ -34,13 +56,9 @@ export function render(root, app) {
       '<div class="card sms-compose">' +
         '<h3>✉️ تحرير الرسالة</h3>' +
         '<div class="field-row">' +
-          '<div class="field mode-field"><span>نوع التنبيه:</span>' +
-            [CFG.typePlanning + ':البرنامج التخطيطي', CFG.typeActual + ':البرنامج الفعلي', 'both:كلاهما'].map((x) => {
-              const i = x.indexOf(':');
-              const k = x.slice(0, i), lab = x.slice(i + 1);
-              return '<label class="radio"><input type="radio" name="s-type" value="' + k + '"' + (local.type === k || (k === 'both' && local.type === 'both') ? ' checked' : '') + '> ' + lab + '</label>';
-            }).join('') +
-          '</div>' +
+          '<label class="field"><span>الرسالة حسب الحالة (افتراضي تلقائي ثم قابل للتعديل)</span><select id="s-state">' +
+            STATE_TEMPLATES.map((t) => '<option value="' + t.key + '"' + (local.state === t.key ? ' selected' : '') + '>' + t.label + '</option>').join('') +
+          '</select></label>' +
           '<label class="field"><span>طريقة الإرسال</span><select id="s-provider">' +
             SMS_PROVIDERS.map((p) => '<option value="' + p.key + '"' + (local.provider === p.key ? ' selected' : '') + '>' + p.label + '</option>').join('') +
           '</select></label>' +
@@ -95,11 +113,15 @@ export function render(root, app) {
       (local.mode === 'all' && selectedRows.length ? '' : '');
   };
 
-  root.querySelectorAll('input[name="s-type"]').forEach((r) => r.addEventListener('change', () => {
-    local.type = r.value;
-    root.querySelector('#s-body').value = appTemplateFor(local.type);
+  root.querySelector('#s-state').addEventListener('change', (e) => {
+    local.state = e.target.value;
+    const key = resolveKey(local.state, targetRows);
+    local.type = typeOfKey(key);
+    local.body = templateForKey(key);
+    lastResolvedKey = key;
+    root.querySelector('#s-body').value = local.body;
     preview();
-  }));
+  });
 
   root.querySelectorAll('input[name="s-mode"]').forEach((r) => r.addEventListener('change', () => {
     local.mode = r.value;
@@ -114,16 +136,17 @@ export function render(root, app) {
 
   root.querySelector('#s-save-tpl').addEventListener('click', () => {
     if (!requireAdminLocal()) return;
-    const key = local.type === CFG.typePlanning ? 'planning' : local.type === CFG.typeActual ? 'actual' : 'both';
+    const key = resolveKey(local.state, targetRows);
     saveTemplate(key, root.querySelector('#s-body').value);
     toast('تم حفظ الرسالة الافتراضية', 'ok');
   });
 
   root.querySelector('#s-reset-tpl').addEventListener('click', () => {
     if (!requireAdminLocal()) return;
-    const key = local.type === CFG.typePlanning ? 'planning' : local.type === CFG.typeActual ? 'actual' : 'both';
+    const key = resolveKey(local.state, targetRows);
     saveTemplate(key, '');
-    root.querySelector('#s-body').value = appTemplateFor(local.type);
+    local.body = templateForKey(key);
+    root.querySelector('#s-body').value = local.body;
     preview();
     toast('تمت استعادة الرسالة الافتراضية', 'ok');
   });

@@ -1,10 +1,24 @@
 /* Config — مصادر البيانات والثوابت (لا أسرار هنا) */
 
+/* المصادر الثلاثة مفصولة صراحةً — لا تُخلط ولا تُدمج أبداً:
+   1) الأرشيف النهائي (Link1): القراءة للاستعلام التاريخي + الإضافة فقط أثناء الترحيل.
+      ممنوع: الحذف أو التعديل على صفوفه من التطبيق.
+   2) البيانات المرجعية (Link2): المدارس/الفعاليات/قائمة المشرفيين — قراءة فقط،
+      ولا يُسمح بأي كتابة/حذف/تعديل عليها إطلاقاً.
+   3) ردود الاستمارة الحيّة (Link3): تُقرأ وقت الترحيل فقط — أثناء الترحيل
+      لا يُحذف منها شيء ولا يُعدَّل، والإضافة تتم في الأرشيف (Link1) فقط. */
+export const ARCHIVE_SHEET_URL =
+  'https://docs.google.com/spreadsheets/d/1rthlmaZES8c95kUI6ErfD4YgiymWq4RoKXNXqgoBPnI/export?format=csv';
+export const RESPONSES_SHEET_URL =
+  'https://docs.google.com/spreadsheets/d/16Sw_4TjAM0fhYKicxyZE0EzGoT98ZnlMSxYKxU3ILLk/export?format=csv';
+export const MASTER_DATA_SHEET_URL =
+  'https://docs.google.com/spreadsheets/d/1P2X7VK_ZnSqhrLtVJbDTwnjJqoVuNWaK-7i3EqvN6Gg/export?format=csv';
+
 export const CFG = {
   sheets: {
-    admin: 'https://docs.google.com/spreadsheets/d/1rthlmaZES8c95kUI6ErfD4YgiymWq4RoKXNXqgoBPnI/export?format=csv',
-    programs: 'https://docs.google.com/spreadsheets/d/16Sw_4TjAM0fhYKicxyZE0EzGoT98ZnlMSxYKxU3ILLk/export?format=csv',
-    lists: 'https://docs.google.com/spreadsheets/d/1P2X7VK_ZnSqhrLtVJbDTwnjJqoVuNWaK-7i3EqvN6Gg/export?format=csv',
+    admin: ARCHIVE_SHEET_URL,
+    programs: RESPONSES_SHEET_URL,
+    lists: MASTER_DATA_SHEET_URL,
   },
   sheetIds: {
     admin: '1rthlmaZES8c95kUI6ErfD4YgiymWq4RoKXNXqgoBPnI',
@@ -42,14 +56,19 @@ export const CFG = {
   statusFilters: [
     { key: 'all', label: 'الجميع' },
     { key: 'planning', label: 'أرسل التخطيط' },
+    { key: 'notPlanning', label: 'لم يرسل التخطيط' },
     { key: 'actual', label: 'أرسل الفعلي' },
-    { key: 'none', label: 'لم يرسل' },
+    { key: 'notActual', label: 'لم يرسل الفعلي' },
+    { key: 'complete', label: 'مكتمل' },
+    { key: 'incomplete', label: 'غير مكتمل' },
   ],
 
   messages: {
     planning: 'السلام عليكم، يرجى منكم إرسال البرنامج الأسبوعي التخطيطي للأسبوع المحدد ({الاسبوع}) عبر تطبيق برنامج المشرفين، شاكرين تعاونكم.',
     actual: 'السلام عليكم، يرجى منكم إرسال البرنامج الأسبوعي الفعلي للأسبوع المحدد ({الاسبوع}) عبر تطبيق برنامج المشرفين، شاكرين تعاونكم.',
     both: 'السلام عليكم، يرجى منكم إرسال البرنامج الأسبوعي التخطيطي/الفعلي للأسبوع المحدد ({الاسبوع}) عبر تطبيق برنامج المشرفين، شاكرين تعاونكم.',
+    none: 'السلام عليكم، لم نستلم منكم أي برنامج (تخطيطي أو فعلي) للأسبوع المحدد ({الاسبوع}) — يرجى الإرسال عبر تطبيق برنامج المشرفين، شاكرين تعاونكم.',
+    complete: 'السلام عليكم، نشكر لكم إرسال برامجكم التخطيطية والفعلية للأسبوع المحدد ({الاسبوع}) — بارك الله فيكم وشكراً لتعاونكم.',
   },
 
   storage: {

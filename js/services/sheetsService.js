@@ -2,7 +2,7 @@
 
 import { CFG } from '../config.js';
 import { fetchText, storeGet, storeSet, normName } from '../utils.js';
-import { parseAdminCsv, parseProgramsCsv, parseListsCsv, buildMasterSupervisors, allWeeks } from '../models.js';
+import { parseAdminCsv, parseProgramsCsv, parseListsCsv, masterFromLists, findOrphanSupervisors, allWeeks } from '../models.js';
 
 export function recordKey(r) {
   return [
@@ -26,7 +26,7 @@ function buildDerived(cached) {
   const lists = parseListsCsv(cached.listsRaw || '');
   const admin = parseAdminCsv(cached.adminRaw || '');
   const programs = parseProgramsCsv(cached.programsRaw || '');
-  const master = buildMasterSupervisors(lists, admin.records, programs.records);
+  const master = masterFromLists(lists);
   const weeks = allWeeks(admin.weeks, programs.headerWeek, programs.records);
   const records = admin.records.concat(programs.records);
   return {
@@ -35,6 +35,7 @@ function buildDerived(cached) {
     admin,
     programs,
     master,
+    orphans: findOrphanSupervisors(master, records),
     weeks,
     records,
     sources: cached.sources || {},

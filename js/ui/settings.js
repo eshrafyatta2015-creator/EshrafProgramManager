@@ -31,7 +31,7 @@ export function render(root, app) {
       'card-conn') +
 
     card('✉️ الرسائل الافتراضية',
-      ['planning:رسالة التخطيط', 'actual:رسالة الفعلي', 'both:رسالة كلاهما'].map((x) => {
+      ['planning:رسالة التخطيط', 'actual:رسالة الفعلي', 'both:رسالة كلاهما', 'none:رسالة (لم يرسلوا)', 'complete:رسالة (مكتمل)'].map((x) => {
         const i = x.indexOf(':');
         const k = x.slice(0, i), lab = x.slice(i + 1);
         const cur = app.settings.templates[k] || CFG.messages[k];

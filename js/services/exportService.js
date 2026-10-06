@@ -102,6 +102,14 @@ export function buildExcelWorkbook(payload) {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'التفاصيل');
   }
 
+  if (payload.migratedRows) {
+    const aoa = [['المشرف', 'الأسبوع', 'النوع', 'اليوم', 'المدرسة', 'الفعلية', 'الملاحظات', 'الكود', 'المصدر', 'الوقت']];
+    for (const r of payload.migratedRows) {
+      aoa.push([r.supervisor, r.week ? r.week.label : '', r.type || '', r.dayLabel || '', r.school || '', r.activity || '', r.notes || '', r.code || '', r.source || '', r.timestamp || '']);
+    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'المرحّل');
+  }
+
   if (payload.planningRows || payload.actualRows) {
     const mk = (rows, name) => {
       const aoa = [['المشرف', 'الأسبوع', ...CFG.days.map((d) => d.label + ' - مدرسة'), ...CFG.days.map((d) => d.label + ' - فعالية'), 'الملاحظات']];

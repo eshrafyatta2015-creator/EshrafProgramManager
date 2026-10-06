@@ -2,11 +2,9 @@
 
 import { CFG } from '../config.js';
 import { escapeHtml, formatDate, downloadBlob, csvSerialize, ltr } from '../utils.js';
-import { tableHtml, toast, showModal, confirmModal, emptyState, htmlCell } from './components.js';
+import { tableHtml, toast, emptyState, htmlCell } from './components.js';
 import { filterRecords, buildStatusReport, flattenDetail, reportTable } from '../services/reportService.js';
-import { buildExportPlan } from '../services/exportService.js';
 import { exportExcel, downloadCsv } from '../services/exportService.js';
-import { appendData, verifyAppendInCsv, recordKey } from '../services/sheetsService.js';
 import { logAdd } from '../services/logService.js';
 import { App, go } from './app.js';
 
@@ -118,7 +116,7 @@ function paintResult(root, app, res) {
       '<div class="btn-row">' +
         '<button class="btn btn-primary" id="r-xlsx">📊 تصدير Excel</button>' +
         '<button class="btn" id="r-csv">📄 تصدير CSV</button>' +
-        '<button class="btn btn-accent" id="r-sheets">📤 تصدير البيانات إلى Google Sheets</button>' +
+        '<button class="btn btn-accent" id="r-migrate">📦 الانتقال إلى شاشة الترحيل</button>' +
       '</div>' +
     '</div>';
 
@@ -138,7 +136,10 @@ function paintResult(root, app, res) {
 
   actions.querySelector('#r-xlsx').addEventListener('click', () => doExcel(app, res));
   actions.querySelector('#r-csv').addEventListener('click', () => doCsv(app, res));
-  actions.querySelector('#r-sheets').addEventListener('click', () => doSheets(app, res));
+  actions.querySelector('#r-migrate').addEventListener('click', () => {
+    if (res.week) App.migrateWeekStart = res.week.start;
+    go('migrate');
+  });
 }
 
 function doExcel(app, res) {
@@ -170,74 +171,3 @@ function doCsv(app, res) {
   toast('تم تنزيل CSV', 'ok');
 }
 
-async function doSheets(app, res) {
-  if (App.role !== 'admin') {
-    toast('التصدير إلى Google Sheets يتطلب صلاحية مدير', 'warn');
-    return;
-  }
-  const week = res.week;
-  if (!week) {
-    toast('اختر أسبوعاً محدداً للتصدير إلى الأرشيف', 'error');
-    return;
-  }
-  const adminRecords = (app.data.admin && app.data.admin.records) || [];
-  const weekNew = (app.data.records || []).filter((r) => r.weekStart === week.start && r.source !== 'admin');
-  const plan = buildExportPlan(adminRecords, weekNew, week);
-
-  if (!plan.rows.length) {
-    showModal({
-      title: 'لا جديد للتصدير',
-      body: '<p>كل سجلات أسبوع ' + escapeHtml(week.label) + ' موجودة بالفعل في الجدول (' + plan.skipped + ' مكرر تم تخطيه).</p>',
-      actions: [{ label: 'حسنًا', cls: 'btn-primary' }],
-    });
-    return;
-  }
-
-  const marker = plan.keep.length ? plan.keep[0].supervisor : '';
-  showModal({
-    title: 'تأكيد التصدير إلى Google Sheets',
-    body: '<ul class="export-summary">' +
-      '<li>الأسبوع: <b>' + escapeHtml(week.label) + '</b></li>' +
-      '<li>صفوف جديدة ستُضاف: <b class="t-green">' + plan.keep.length + '</b></li>' +
-      '<li>صفوف مكررة ستُتخطى: <b>' + plan.skipped + '</b></li>' +
-      '<li>سيُضاف رأس أسبوع جديد: <b>' + (plan.needsHeader ? 'نعم' : 'لا — الأسبوع موجود') + '</b></li>' +
-      '<li>الوجهة: جدول الأرشيف <code>' + escapeHtml(CFG.sheetIds.admin.slice(0, 12)) + '…</code></li>' +
-      '</ul><p class="muted">الكتابة تتم عبر Google Apps Script (رابط CSV للقراءة فقط). لن ندّعي النجاح قبل التحقق بإعادة قراءة الجدول.</p>',
-    actions: [
-      { label: 'إلغاء', cls: 'btn-ghost' },
-      {
-        label: 'تأكيد الإضافة',
-        cls: 'btn-primary',
-        onClick: async () => {
-          const url = app.settings.appsScriptUrl;
-          const res2 = await appendData({ rows: plan.rows, markerRow: marker, weekLabel: week.label, appsScriptUrl: url });
-          if (!res2.ok) {
-            logAdd('تصدير البيانات', 'فشل: ' + (res2.code || '') + ' ' + (res2.error || ''));
-            if (res2.code === 'NOT_CONFIGURED') {
-              showModal({
-                title: 'ربط الكتابة غير مهيأ',
-                body: '<p>للكتابة إلى Google Sheets يلزم نشر سكربت Apps Script من الملف <code>apps-script/AppendRows.gs</code> ثم لصق رابط الويب أب في الإعدادات.</p>',
-                actions: [
-                  { label: 'لاحقًا', cls: 'btn-ghost' },
-                  { label: 'فتح الإعدادات', cls: 'btn-primary', onClick: () => go('settings') },
-                ],
-              });
-            } else {
-              toast('فشل التصدير: ' + res2.error, 'error');
-            }
-            return false;
-          }
-          const verify = await verifyAppendInCsv(marker, week.start);
-          logAdd('تصدير البيانات', week.label + ' · أُضيف=' + res2.appended + ' · تخطي=' + res2.skipped + ' · تحقق=' + (verify.ok ? 'نجاح' : 'لم يتأكد'));
-          if (verify.ok) {
-            toast('تمت الإضافة والتحقق: ' + res2.appended + ' صفوف', 'ok');
-          } else {
-            toast('أفاد السكربت بإضافة ' + res2.appended + ' صفوف لكن لم يظهر التحقق بعد — أعد التحديث بعد قليل', 'warn');
-          }
-          await (async () => { const btn = document.querySelector('#btn-refresh'); if (btn) btn.click(); })();
-          return true;
-        },
-      },
-    ],
-  });
-}

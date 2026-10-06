@@ -68,8 +68,12 @@ export function computeStatus(master, records, week, phones) {
 
 export function filterRows(rows, { filter = 'all', query = '' } = {}) {
   let out = rows;
-  if (filter === 'planning') out = out.filter((r) => r.sentPlanning && !r.sentActual);
+  if (filter === 'planning') out = out.filter((r) => r.sentPlanning);
+  else if (filter === 'notPlanning') out = out.filter((r) => !r.sentPlanning);
   else if (filter === 'actual') out = out.filter((r) => r.sentActual);
+  else if (filter === 'notActual') out = out.filter((r) => !r.sentActual);
+  else if (filter === 'complete') out = out.filter((r) => r.sentPlanning && r.sentActual);
+  else if (filter === 'incomplete') out = out.filter((r) => !(r.sentPlanning && r.sentActual));
   else if (filter === 'none') out = out.filter((r) => !r.sentPlanning && !r.sentActual);
   else if (filter === 'sentAny') out = out.filter((r) => r.sentPlanning || r.sentActual);
 

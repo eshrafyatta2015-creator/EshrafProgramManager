@@ -67,6 +67,11 @@ export function render(root, app) {
           return '<label class="radio"><input type="radio" name="d-mode" value="' + k + '"' + (sel.mode === k ? ' checked' : '') + '> ' + lab + '</label>';
         }).join('') +
       '</div>' +
+      '<label class="field"><span>نوع البرنامج</span><select id="d-type">' +
+        '<option value=""' + (!sel.type ? ' selected' : '') + '>الكل</option>' +
+        '<option value="' + CFG.typePlanning + '"' + (sel.type === CFG.typePlanning ? ' selected' : '') + '>تخطيط</option>' +
+        '<option value="' + CFG.typeActual + '"' + (sel.type === CFG.typeActual ? ' selected' : '') + '>فعلي</option>' +
+      '</select></label>' +
       '<button class="btn btn-primary" id="d-show">عرض البرنامج</button>' +
     '</div>' +
     '<div id="d-result"></div>';
@@ -77,6 +82,7 @@ export function render(root, app) {
     sel.from = root.querySelector('#d-from').value;
     sel.to = root.querySelector('#d-to').value;
     sel.mode = (root.querySelector('input[name="d-mode"]:checked') || {}).value || 'both';
+    sel.type = root.querySelector('#d-type').value;
     sel.submitted = true;
     renderResult(root.querySelector('#d-result'), app);
   };
@@ -94,7 +100,8 @@ function renderResult(el, app) {
   const to = sel.to || (app.week && app.week.end) || '9999-99-99';
 
   const recs = (app.data.records || []).filter((r) =>
-    r.supervisorNorm === sel.supNorm && r.week && r.week.start <= to && r.week.end >= from);
+    r.supervisorNorm === sel.supNorm && r.week && r.week.start <= to && r.week.end >= from &&
+    (!sel.type || r.type === sel.type));
 
   const byWeek = new Map();
   for (const r of recs) {

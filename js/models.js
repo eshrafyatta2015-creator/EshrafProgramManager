@@ -195,6 +195,35 @@ export function buildMasterSupervisors(listParsed, adminRecords, programRecords)
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'ar'));
 }
 
+/* قائمة المتابعة: من الملف المرجعي فقط (Link2) — بدون دمج الردود أو الأرشيف */
+export function masterFromLists(listParsed) {
+  const map = new Map();
+  for (const s of listParsed.supervisors) {
+    if (isNoiseSupervisor(s.name)) continue;
+    const k = normName(s.name);
+    if (!k || map.has(k)) continue;
+    map.set(k, { name: s.name.trim(), id: s.id || '', nameNorm: k });
+  }
+  return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+}
+
+/* سجلات مشرفين خارج القائمة المرجعية — تُعلَّم فقط ولا تُحذف أبداً */
+export function findOrphanSupervisors(master, records) {
+  const known = new Set(master.map((s) => s.nameNorm));
+  const map = new Map();
+  for (const r of records) {
+    const k = r.supervisorNorm || normName(r.supervisor);
+    if (!k || known.has(k)) continue;
+    const cur = map.get(k) || { name: r.supervisor, nameNorm: k, count: 0, weeks: new Set() };
+    cur.count++;
+    if (r.weekStart) cur.weeks.add(r.weekStart);
+    map.set(k, cur);
+  }
+  return Array.from(map.values())
+    .map((o) => ({ name: o.name, nameNorm: o.nameNorm, count: o.count, weeks: o.weeks.size }))
+    .sort((a, b) => b.count - a.count);
+}
+
 export function recordsForWeek(records, week) {
   if (!week) return [];
   return records.filter((r) => r.weekStart === week.start);

@@ -46,6 +46,7 @@ export function render(root, app) {
   const rows = filterRows(all, app.filters);
   const f = app.filters;
   const selCount = App.selected.size;
+  const orphans = (app.data && app.data.orphans) || [];
 
   root.innerHTML =
     '<div class="toolbar">' +
@@ -60,6 +61,12 @@ export function render(root, app) {
         (selCount ? '<button class="btn btn-sm btn-ghost" data-action="clear-sel">مسح التحديد</button>' : '') +
       '</div>' +
     '</div>' +
+    (orphans.length
+      ? '<div class="banner orphan-banner">⚠ ' + ltr(String(orphans.length)) +
+        ' مشرفاً في السجلات خارج القائمة المرجعية (لم يُحذف شيء): ' +
+        escapeHtml(orphans.slice(0, 5).map((o) => o.name).join('، ')) +
+        (orphans.length > 5 ? ' +' + (orphans.length - 5) : '') + '</div>'
+      : '') +
     (rows.length
       ? '<div class="sup-grid">' + rows.map(card).join('') + '</div>'
       : emptyState('لا يوجد مشرفون مطابقون لهذا الفلتر/البحث'));
