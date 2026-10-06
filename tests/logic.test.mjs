@@ -168,7 +168,16 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
 
 /* 17) تصدير Excel حقيقي */
 {
-  globalThis.XLSX = require('../vendor/xlsx.full.min.js');
+  /* تحميل xlsx كما في المتصفح (سكربت عام) — require يعيد {} لهذا الملف الخام */
+  const fsMod = await import('node:fs');
+  const vmMod = await import('node:vm');
+  vmMod.runInThisContext(
+    fsMod.readFileSync(new URL('../vendor/xlsx.full.min.js', import.meta.url), 'utf8'),
+    { filename: 'xlsx.full.min.js' },
+  );
+  if (!globalThis.XLSX || !globalThis.XLSX.utils) {
+    globalThis.XLSX = require('../vendor/xlsx.full.min.js');
+  }
   const wk = weeks[0];
   const st = ST.computeStatus(master, records, wk, {});
   const payload = {
