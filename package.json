@@ -1,0 +1,11 @@
+{
+  "name": "eshraf-program-manager",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "برنامج متابعة إرسال المشرفين — لوحة ويب ثابتة مع Google Sheets وSMS",
+  "scripts": {
+    "serve": "node serve.mjs",
+    "test": "node tests/data-integrity.mjs && node tests/logic.test.mjs"
+  }
+}

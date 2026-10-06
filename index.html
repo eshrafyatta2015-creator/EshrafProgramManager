@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0f2c52">
+<title>إدارة ومتابعة برامج المشرفين</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230f2c52'/><text x='50' y='68' font-size='52' text-anchor='middle' fill='white'>📊</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">📊</div>
+    <div>
+      <div class="brand-title">إدارة ومتابعة برامج المشرفين</div>
+      <div class="brand-sub">مديرية التربية والتعليم يطا · قسم الإشراف والتأهيل التربوي</div>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <span id="last-update" class="last-update"></span>
+    <button id="btn-refresh" class="btn" type="button">🔄 تحديث البيانات</button>
+    <button id="btn-role" class="btn btn-ghost" type="button">👤 مدير</button>
+  </div>
+</header>
+
+<div class="weekbar">
+  <button id="btn-week-prev" class="btn btn-icon" type="button" title="الأسبوع السابق" aria-label="الأسبوع السابق">▶</button>
+  <label class="week-field"><span>بداية الأسبوع</span><input type="date" id="week-start"></label>
+  <label class="week-field"><span>نهاية الأسبوع</span><input type="date" id="week-end" readonly></label>
+  <select id="week-select" aria-label="اختيار الأسبوع"></select>
+  <button id="btn-week-next" class="btn btn-icon" type="button" title="الأسبوع التالي" aria-label="الأسبوع التالي">◀</button>
+  <span id="week-chip" class="chip chip-static"></span>
+</div>
+
+<div id="offline-banner" class="banner hidden"></div>
+
+<nav class="tabs" id="tabs" aria-label="أقسام التطبيق">
+  <button class="tab active" data-tab="dashboard" type="button">📊 الرئيسية</button>
+  <button class="tab" data-tab="supervisors" type="button">👥 المشرفون</button>
+  <button class="tab" data-tab="details" type="button">📅 تفاصيل البرنامج</button>
+  <button class="tab" data-tab="sms" type="button">📱 تنبيه SMS</button>
+  <button class="tab" data-tab="reports" type="button">📈 التقارير</button>
+  <button class="tab" data-tab="settings" type="button">⚙️ الإعدادات</button>
+</nav>
+
+<main class="main">
+  <section id="tab-dashboard" class="panel"></section>
+  <section id="tab-supervisors" class="panel hidden"></section>
+  <section id="tab-details" class="panel hidden"></section>
+  <section id="tab-sms" class="panel hidden"></section>
+  <section id="tab-reports" class="panel hidden"></section>
+  <section id="tab-settings" class="panel hidden"></section>
+</main>
+
+<footer class="footer">
+  <span>EshrafProgramManager · قراءة من Google Sheets · الكتابة عبر Apps Script فقط</span>
+</footer>
+
+<div id="modal-root"></div>
+<div id="toast-root" class="toast-root"></div>
+
+<div id="loading" class="loading-overlay hidden">
+  <div class="spinner"></div>
+  <div class="loading-msg">جارٍ تحميل البيانات…</div>
+</div>
+
+<script src="vendor/xlsx.full.min.js"></script>
+<script type="module" src="js/ui/app.js"></script>
+</body>
+</html>
