@@ -65,6 +65,16 @@ export function resolveRecipients(selectedRows, phones) {
   };
 }
 
+/* رسالة مستقلة لكل مشرف (§2): يُستبدل {المشرف} باسم كل مستلم على حدة،
+   فلا تصل رسالة باسم مشرف إلى مشرف آخر. */
+export function buildMessages(selectedRows, template, ctx, phones) {
+  const resolved = resolveRecipients(selectedRows, phones);
+  return resolved.entries.map((e) => ({
+    ...e,
+    body: buildMessage(template, { ...ctx, supervisor: e.name }),
+  }));
+}
+
 function openUrl(url) {
   try {
     const w = window.open(url, '_blank');
@@ -167,4 +177,89 @@ export async function send({ provider, recipients, body, settings }) {
 
 export function confirmText(count) {
   return 'سيتم إرسال رسالة إلى ' + count + ' مشرفًا، هل تريد المتابعة؟';
+}
+
+/* رقم جوال صالح: 8-15 رقماً بعد إزالة الرموز */
+export function isValidPhone(p) {
+  const digits = String(p == null ? '' : p).replace(/[^\d]/g, '');
+  return digits.length >= 8 && digits.length <= 15;
+}
+
+/* سبب الفشل بصيغة عربية واضحة يُعرض للمستخدم باسم المشرف */
+export function failureReason(res, item) {
+  const code = (res && res.code) || '';
+  const err = String((res && res.error) || '');
+  if (code === 'NO_PHONES' || (!item || !item.phone)) return 'لا يوجد رقم هاتف';
+  if (code === 'INVALID_PHONE') return 'رقم الهاتف غير صالح';
+  if (code === 'NOT_CONFIGURED') return 'لم يتم ضبط رابط مزوّد SMS';
+  if (code === 'BLOCKED_POPUP') return 'المتصفح حجب فتح النافذة';
+  if (err) return err;
+  return 'سبب غير معروف';
+}
+
+/* إرسال متسلسل لرسائل مستقلة لكل مشرف (§3):
+   يمرّ على المحددين حصراً، يُبلّغ عن التقدّم بعد كل رسالة، ويترك الواجهة حرة (لا تجميد).
+   لا يُرسل إلى غير المحددين إطلاقاً — القائمة هي entries ولا شيء آخر. */
+export async function sendBatch({ provider, entries, settings, onProgress, delayMs }) {
+  const list = (entries || []).slice();
+  const total = list.length;
+  const delay = delayMs == null ? 350 : delayMs;
+  const results = [];
+  let sent = 0;
+  let failed = 0;
+  const report = (i, item) => {
+    if (typeof onProgress === 'function') {
+      try { onProgress({ index: i, total, sent, failed, remaining: total - i, item }); } catch (e) { /* لا يُعطّل الإرسال */ }
+    }
+  };
+
+  if (!total) return { ok: false, code: 'EMPTY', results, sent: 0, failed: 0, total: 0 };
+
+  /* نسخ النص: عملية واحدة لجميع الرسائل (لا يمكن تجاوز الحافظة رسالةً رسالة) */
+  if (provider === 'copy') {
+    const text = list.map((e) => e.body).join('\n\n──────────\n\n');
+    const res = await send({ provider: 'copy', recipients: { entries: list, withPhone: list, withoutPhone: [] }, body: text, settings });
+    for (let i = 0; i < total; i++) {
+      const r = { name: list[i].name, phone: list[i].phone, ok: res.ok, mode: 'copy', error: res.ok ? '' : (res.error || '') };
+      results.push(r);
+      if (res.ok) sent++; else failed++;
+      report(i + 1, list[i]);
+    }
+    return { ok: res.ok, mode: 'copy', notice: res.notice, results, sent, failed, total };
+  }
+
+  for (let i = 0; i < total; i++) {
+    const item = list[i];
+    let okRes = false;
+    let err = '';
+    let code = '';
+    let mode = provider;
+    /* تحقق مسبق من رقم الجوال قبل استدعاء المزوّد — لا إرسال بدون رقم صالح */
+    if (provider === 'api' && !isValidPhone(item.phone)) {
+      okRes = false;
+      code = item.phone ? 'INVALID_PHONE' : 'NO_PHONES';
+      err = item.phone ? 'رقم الهاتف غير صالح' : 'لا يوجد رقم هاتف';
+    } else {
+      try {
+        const res = await send({
+          provider,
+          recipients: { entries: [item], withPhone: item.phone ? [item] : [], withoutPhone: item.phone ? [] : [item] },
+          body: item.body,
+          settings,
+        });
+        okRes = !!res.ok;
+        mode = res.mode || provider;
+        if (!okRes) { err = res.error || ''; code = res.code || ''; }
+      } catch (e) {
+        okRes = false;
+        err = String((e && e.message) || e);
+      }
+    }
+    results.push({ name: item.name, phone: item.phone, ok: okRes, mode, error: err, code });
+    if (okRes) sent++; else failed++;
+    report(i + 1, item);
+    if (i < total - 1 && delay > 0) await new Promise((r) => setTimeout(r, delay));
+  }
+
+  return { ok: failed === 0, results, sent, failed, total, mode: provider };
 }

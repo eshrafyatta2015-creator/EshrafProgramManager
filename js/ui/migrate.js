@@ -8,6 +8,7 @@ import { tableHtml, toast, showModal, emptyState, statCard, htmlCell } from './c
 import {
   buildMigratePreview, executeMigration, migrationHistoryRows, migrationList,
   pendingDeleteEntry, retryDelete,
+  lastUndoableEntry, undoBlockReason, executeUndo, weekBeforeEntry,
 } from '../services/migrationService.js';
 import { flattenDetail } from '../services/reportService.js';
 import { exportExcel } from '../services/exportService.js';
@@ -70,16 +71,18 @@ function previewHtml(p) {
 }
 
 function historyHtml() {
-  const rows = migrationHistoryRows(50);
-  if (!rows.length) return emptyState('لا توجد عمليات ترحيل بعد');
   const entries = migrationList().slice(0, 50);
-  return tableHtml(['الوقت', 'الأسبوع', 'السجلات', 'المحذوف من الردود', 'الحالة', 'المستخدم'],
-    rows.map((r, i) => {
-      const e = entries[i];
-      const status = e && e.pendingDelete && e.pendingDelete.length
-        ? htmlCell('<b>' + escapeHtml(r[4]) + '</b> <button class="btn btn-sm" data-retry="' + escapeHtml(e.id) + '">🔁 إعادة محاولة الحذف</button>')
-        : escapeHtml(r[4]);
-      return [ltr(r[0]), ltr(r[1]), r[2], ltr(r[3]), status, r[5]];
+  if (!entries.length) return emptyState('لا توجد عمليات ترحيل بعد');
+  return tableHtml(['#', 'الوقت', 'الأسبوع', 'السجلات', 'المحذوف من الردود', 'الحالة', 'المستخدم'],
+    entries.map((e) => {
+      const id = e.opNo ? '#' + e.opNo : String(e.id || '').slice(0, 6);
+      const status = e.pendingDelete && e.pendingDelete.length
+        ? htmlCell('<b>' + escapeHtml(e.status) + '</b> <button class="btn btn-sm" data-retry="' + escapeHtml(e.id) + '">🔁 إعادة محاولة الحذف</button>')
+        : (e.status === 'REVERSED'
+          ? htmlCell('<span class="pill mini">↩ ' + escapeHtml(e.status) + '</span>')
+          : escapeHtml(e.status));
+      return [ltr(id), ltr(e.time), ltr(e.weekLabel), String(e.records),
+        ltr(String(e.deleted || 0) + '/' + (e.deleteExpected || 0)), status, e.user || '—'];
     }));
 }
 
@@ -100,6 +103,8 @@ export function render(root, app) {
         '<div class="btn-row">' +
           '<button class="btn btn-primary btn-lg" id="m-preview">🔎 معاينة الترحيل</button>' +
           '<button class="btn btn-accent btn-lg" id="m-run"' + (canRun ? '' : ' disabled') + '>✅ ' + CFG.texts.confirmMigrate + '</button>' +
+          '<button class="btn btn-danger btn-lg" id="m-undo" title="إجراء حساس: يُسترجع سجلات العملية من الأرشيف إلى الردود ثم يُحذفها من الأرشيف فقط">' +
+            CFG.texts.undoButton + '</button>' +
           '<button class="btn" id="m-xlsx"' + (preview && preview.kept ? '' : ' disabled') + '>📊 تصدير Excel للمرحّل</button>' +
         '</div>' +
       '</div>' +
@@ -119,6 +124,7 @@ export function render(root, app) {
 
   root.querySelector('#m-preview').addEventListener('click', () => doPreview(app));
   root.querySelector('#m-run').addEventListener('click', () => doRun(app));
+  root.querySelector('#m-undo').addEventListener('click', () => doUndo(app));
   root.querySelector('#m-xlsx').addEventListener('click', () => doExcel(app));
   bindHistory(root, app);
 }
@@ -319,11 +325,112 @@ function showHistoryModal() {
     wide: true,
     body: rows.length
       ? tableHtml(['الوقت', 'الأسبوع', 'السجلات', 'المحذوف', 'الحالة', 'المستخدم'],
-          rows.map((r) => [ltr(r[0]), ltr(r[1]), r[2], ltr(r[3]), r[4], r[5]]))
+          rows.map((r) => [ltr(r[0]), ltr(r[1]), r[2], ltr(r[3]),
+            r[4] === 'REVERSED' ? htmlCell('<span class="pill mini">↩ REVERSED</span>') : r[4], r[5]]))
       : emptyState('لا توجد عمليات ترحيل بعد'),
     actions: [{ label: 'إغلاق', cls: 'btn-primary' }],
   });
   return true;
+}
+
+/* ---------- التراجع عن آخر عملية ترحيل (§6-§11) ---------- */
+
+function doUndo(app) {
+  if (!requireAdmin('التراجع عن الترحيل')) return;
+  if (busy) { toast('انتظر انتهاء العملية الجارية', 'warn'); return; }
+
+  const entry = lastUndoableEntry();
+  const reason = undoBlockReason(entry);
+  if (reason) {
+    showModal({
+      title: 'التراجع غير متاح',
+      body: '<p class="t-red">' + escapeHtml(reason) + '</p>' +
+        '<p class="muted">لم يُحذف أو يُعدَّل أي شيء.</p>',
+      actions: [{ label: 'حسنًا', cls: 'btn-primary' }],
+    });
+    return;
+  }
+
+  showModal({
+    title: CFG.texts.undoConfirmTitle,
+    body:
+      '<p><b>Migration ID:</b> ' +
+        ltr(entry.opNo ? '#' + entry.opNo : String(entry.id).slice(0, 8)) + '</p>' +
+      '<p><b>الأسبوع:</b></p>' +
+      '<p>من <b>' + ltr(entry.weekStart) + '</b> إلى <b>' + ltr(entry.weekEnd || '—') + '</b></p>' +
+      '<p><b>عدد السجلات المرحّلة:</b> ' + ltr(String(entry.records)) + '</p>' +
+      '<p><b>تاريخ ووقت الترحيل:</b> ' + ltr(entry.time) + '</p>' +
+      '<p class="confirm-text"><b>' + escapeHtml(CFG.texts.undoAsk) + '</b></p>' +
+      '<p class="muted">سيتم: استرجاع السجلات إلى ملف الردود ← التحقق ← حذف سجلات هذه العملية من الأرشيف فقط ← إرجاع الأسبوع السابق ← تحديث الحالة إلى REVERSED. لن تُمس سجلات العمليات السابقة.</p>',
+    actions: [
+      { label: CFG.texts.cancel, cls: 'btn-ghost' },
+      { label: CFG.texts.undoConfirmAction, cls: 'btn-danger', onClick: async () => runUndo(app) },
+    ],
+  });
+}
+
+async function runUndo(app) {
+  busy = true;
+  const root = document.querySelector('#tab-migrate');
+  const undoBtn = root && root.querySelector('#m-undo');
+  if (undoBtn) undoBtn.disabled = true;
+  try {
+    const entry = lastUndoableEntry();
+    const res = await executeUndo({
+      entry,
+      appsScriptUrl: app.settings.appsScriptUrl,
+      user: app.role === 'admin' ? 'مدير' : 'عارض',
+    });
+
+    if (!res.ok) {
+      const detail = res.verify
+        ? '<ul class="export-summary"><li>الموجود من مفاتيح العملية: <b>' +
+          ltr(String(res.verify.found)) + '</b> من <b>' + ltr(String(res.verify.expected)) + '</b></li></ul>'
+        : (res.detail ? '<p class="muted">' + escapeHtml(res.detail) + '</p>' : '');
+      showModal({
+        title: 'تم إيقاف عملية التراجع',
+        body: '<p class="t-red">' + escapeHtml(res.error || CFG.texts.undoAbort) + '</p>' + detail +
+          '<p class="muted">لم يُحذف أي شيء من الأرشيف.</p>',
+        actions: [{ label: 'حسنًا', cls: 'btn-primary' }],
+      });
+      return false;
+    }
+
+    /* إرجاع الأسبوع السابق (§9/§11) */
+    const prev = weekBeforeEntry(entry, (app.data && app.data.weeks) || []);
+    if (prev) App.migrateWeekStart = prev.start;
+
+    showModal({
+      title: CFG.texts.undoSuccessTitle,
+      body: '<ul class="export-summary">' +
+        '<li>الأسبوع: <b>' + escapeHtml(res.weekLabel) + '</b></li>' +
+        '<li>استُرجعت إلى الردود: <b class="t-green">' + ltr(String(res.count)) + '</b> سجل' +
+          (res.restoredSkipped ? ' (موجود مسبقاً: ' + ltr(String(res.restoredSkipped)) + ')' : '') + '</li>' +
+        '<li>حُذفت من الأرشيف: <b class="t-green">' + ltr(String(res.deleted)) + '</b> صف (سجلات العملية فقط)</li>' +
+        (prev ? '<li>السابق: <b>' + escapeHtml(prev.label) + '</b> (' + ltr(prev.start + ' → ' + prev.end) + ')</li>' : '') +
+        '<li>حالة العملية: <b>REVERSED</b> · المستخدم: <b>' + escapeHtml(res.entry ? res.entry.reversedBy || '' : '') + '</b></li>' +
+        '<li>زمن التنفيذ: <b>' + ltr(String(res.ms)) + ' ms</b></li>' +
+        '</ul>' +
+        '<p class="muted">سجل العملية بقي محفوظاً في سجل الترحيل (لم يُحذف).</p>',
+      actions: [{ label: 'حسنًا', cls: 'btn-primary' }],
+    });
+
+    preview = null;
+    const btn = document.querySelector('#btn-refresh');
+    if (btn) btn.click();
+    const r = document.querySelector('#tab-migrate');
+    if (r) render(r, app);
+    return false;
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    logAdd('تراجع عن ترحيل', 'خطأ غير متوقع: ' + msg);
+    toast('خطأ غير متوقع أثناء التراجع: ' + msg, 'error');
+    return false;
+  } finally {
+    busy = false;
+    const b = document.querySelector('#tab-migrate #m-undo');
+    if (b) b.disabled = false;
+  }
 }
 
 async function doRetry(id, app) {

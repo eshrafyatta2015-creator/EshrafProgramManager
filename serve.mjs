@@ -13,6 +13,7 @@ const MIME = {
   '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.ico': 'image/x-icon',
   '.csv': 'text/csv; charset=utf-8',
   '.gs': 'text/plain; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8',

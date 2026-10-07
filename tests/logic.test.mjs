@@ -641,6 +641,244 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
     `ملف=${cmp.fileTotal} موقع=${cmp.siteTotal} · أسبوع ${cmp.fileWeek}/${cmp.siteWeek} · خام=${cmp.rawRows}`);
 }
 
+/* 42) إرسال SMS: رسالة مستقلة باسم كل مشرف + الهاتف من مصدره (لا بمعرّف) */
+{
+  const rows = [
+    { name: 'أحمد علي', nameNorm: 'احمد علي', phone: '' },
+    { name: 'سارة حسن', nameNorm: 'سارة حسن', phone: '0599999999' },
+  ];
+  const msgs = SMS.buildMessages(rows, 'أهلاً {المشرف} — أسبوع {الاسبوع}',
+    { week: { label: '4/10-10/10' }, type: CFG.typePlanning },
+    { 'احمد علي': '0501234567' });
+  ok('42. رسالة لكل مشرف باسمه + هاتف من الملف/الاستيراد فقط',
+    msgs.length === 2 &&
+    msgs[0].body.includes('أحمد علي') && !msgs[0].body.includes('سارة') &&
+    msgs[1].body.includes('سارة حسن') && !msgs[1].body.includes('أحمد') &&
+    msgs[0].body.includes('4/10-10/10') &&
+    msgs[0].phone === '0501234567' && msgs[1].phone === '0599999999',
+    msgs.map((m) => m.name + '=' + m.phone).join(' · '));
+}
+
+/* 43) تحقق رقم الجوال + أسباب الفشل بالعربية */
+{
+  ok('43. رقم جوال صالح + أسباب الفشل',
+    SMS.isValidPhone('0591234567') && SMS.isValidPhone('+970599999999') &&
+    !SMS.isValidPhone('123') && !SMS.isValidPhone('') && !SMS.isValidPhone(null) &&
+    SMS.failureReason({ code: 'INVALID_PHONE' }, { phone: 'abc' }) === 'رقم الهاتف غير صالح' &&
+    SMS.failureReason({ code: 'NO_PHONES' }, {}) === 'لا يوجد رقم هاتف' &&
+    SMS.failureReason({ error: 'HTTP 500' }, { phone: '0591234567' }) === 'HTTP 500',
+    SMS.failureReason({ code: 'INVALID_PHONE' }, { phone: 'abc' }));
+}
+
+/* 44) إرسال مجموعة: رقم غير صالح يفشل بلا استدعاء الشبكة + عدّاد التقدّم */
+{
+  const orig = globalThis.fetch;
+  let called = 0;
+  globalThis.fetch = async () => { called++; throw new Error('net down'); };
+  try {
+    const progress = [];
+    const res = await SMS.sendBatch({
+      provider: 'api',
+      entries: [
+        { name: 'مشرف 1', phone: '12', body: 'رسالة 1' },
+        { name: 'مشرف 2', phone: '0591234567', body: 'رسالة 2' },
+      ],
+      settings: { smsApiUrl: 'https://provider.example/api' },
+      delayMs: 0,
+      onProgress: (p) => progress.push(p),
+    });
+    ok('44. مجموعة SMS: فشل الرقم غير الصالح + تقدّم بعد كل رسالة',
+      res.total === 2 && res.failed === 2 && res.sent === 0 &&
+      res.results[0].ok === false && res.results[0].code === 'INVALID_PHONE' &&
+      res.results[1].ok === false && res.results[1].error === 'net down' &&
+      called === 1 && progress.length === 2 &&
+      progress[1].index === 2 && progress[1].remaining === 0,
+      'failed=' + res.failed + ' netCalls=' + called);
+  } finally {
+    globalThis.fetch = orig;
+  }
+}
+
+/* 45) نصوص التأكيد/التقدم/النتيجة حرفية كما في المواصفة */
+{
+  ok('45. نصوص إرسال SMS الدقيقة (§5/§3)',
+    CFG.texts.smsConfirmTitle === 'تأكيد الإرسال' &&
+    CFG.texts.smsConfirmLine(7) === 'سيتم إرسال الرسالة إلى عدد (7) من المشرفين.' &&
+    CFG.texts.smsAsk === 'هل تريد المتابعة؟' &&
+    CFG.texts.smsConfirmAction === 'تأكيد الإرسال' &&
+    CFG.texts.smsSending === 'جاري إرسال الرسائل...' &&
+    CFG.texts.smsProgress(3, 10) === 'تم إرسال 3 من 10' &&
+    CFG.texts.smsSelectOne === 'يرجى اختيار مشرف واحد على الأقل قبل الإرسال.' &&
+    CFG.texts.smsFailLine('محمد أحمد', 'رقم الهاتف غير صالح') === 'محمد أحمد — فشل الإرسال — رقم الهاتف غير صالح' &&
+    CFG.texts.smsDoneTitle === 'تم إرسال الرسائل بنجاح',
+    CFG.texts.smsConfirmLine(7));
+}
+
+/* 46) وسم القسم في ملف الردود: يُنسب للأسبوع الصحيح ولا يُعد سجلاً */
+{
+  const hdr = ['Timestamp', 'اسم المشرف', '4/10-10/10', '', '', '', '', '', '', '', '', '', '', '', 'ملاحظات', 'كود', 'نوع البرنامج'];
+  const marker = [CFG.magicHeader, '27/9-3/10'];
+  const row = ['03/10/2026 23:00:00', 'مشرف تجريبي', 'مدرسة', 'نشاط', '', '', '', '', '', '', '', '', '', '', 'م', '112', 'تخطيط'];
+  const p = M.parseProgramsCsv(U.csvSerialize([hdr, marker, row]));
+  const pNoMarker = M.parseProgramsCsv(U.csvSerialize([hdr, row]));
+  ok('46. وسم القسم في الردود: إسناد للأسبوع + بلا سجلات وهمية',
+    p.records.length === 1 && p.records[0].weekStart === '2026-09-27' &&
+    p.rawRows === 1 && p.excluded.length === 0 &&
+    pNoMarker.records.length === 1 && pNoMarker.records[0].weekStart === '2026-10-04',
+    'مع وسم=' + (p.records[0] || {}).weekStart + ' · بلا=' + (pNoMarker.records[0] || {}).weekStart +
+    ' · raw=' + p.rawRows + ' · مستبعد=' + p.excluded.length);
+}
+
+/* 47) مانع التراجع: لا تراجع إلا عن مكتملة أحدث ببيانات كاملة */
+{
+  const mk = (over) => Object.assign({
+    id: 'e1', opNo: 1, ts: 1000, status: 'مكتمل',
+    weekStart: '2026-10-04', weekEnd: '2026-10-10', weekLabel: '4/10-10/10',
+    records: 2, migratedKeys: ['k1', 'k2'], migratedRows: [[], []],
+    deleteTargets: [{ t: '1', s: 'a' }, { t: '2', s: 'b' }],
+    pendingDelete: null,
+  }, over || {});
+  const e = mk();
+  const list = [e];
+  ok('47. مانع التراجع يغطي الحالات المحظورة كلها (§10)',
+    MS.undoBlockReason(e, list) === null &&
+    MS.undoBlockReason(null, list) === CFG.texts.undoNoEntry &&
+    MS.undoBlockReason(mk({ status: 'REVERSED' }), list) === CFG.texts.undoUndone &&
+    MS.undoBlockReason(mk({ status: 'جزئي' }), list) === CFG.texts.undoIncomplete &&
+    MS.undoBlockReason(mk({ pendingDelete: [{ t: '1', s: 'a' }] }), list) === CFG.texts.undoIncomplete &&
+    MS.undoBlockReason(mk({ migratedKeys: [] }), list) === CFG.texts.undoNoKeys &&
+    MS.undoBlockReason(mk({ migratedRows: [] }), list) === CFG.texts.undoNoKeys &&
+    MS.undoBlockReason(mk({ deleteTargets: [] }), list) === CFG.texts.undoNoKeys &&
+    MS.undoBlockReason(mk({ id: 'e0', ts: 500 }), [mk({ id: 'e2', ts: 2000 })]) === CFG.texts.undoNewer,
+    MS.undoBlockReason(e, list) === null ? 'entry=صالح' : 'entry=محظور');
+}
+
+/* 48) تحقق مفاتيح التراجع في الأرشيف + إرجاع الأسبوع السابق */
+{
+  const archiveRecs = [
+    { weekStart: '2026-10-04', supervisorNorm: 'احمد علي', type: 'تخطيط', days: [{ school: 'م1', activity: 'ن1' }] },
+    { weekStart: '2026-10-04', supervisorNorm: 'سارة حسن', type: 'فعلي', days: [{ school: 'م2', activity: 'ن2' }] },
+  ];
+  const keys = archiveRecs.map(DS.recordKey);
+  const v1 = MS.verifyKeysInArchive({ migratedKeys: keys }, archiveRecs);
+  const v2 = MS.verifyKeysInArchive({ migratedKeys: keys.concat('k-x') }, archiveRecs);
+  const v3 = MS.verifyKeysInArchive({ migratedKeys: [] }, archiveRecs);
+  const weekList = [{ start: '2026-10-04' }, { start: '2026-09-27' }, { start: '2026-09-20' }];
+  const prev = MS.weekBeforeEntry({ weekStart: '2026-10-04' }, weekList);
+  ok('48. تحقق 100% للمفاتيح + الأسبوع السابق',
+    v1.ok && v1.found === 2 && !v2.ok && v2.found === 2 && !v3.ok &&
+    prev && prev.start === '2026-09-27',
+    'found=' + v1.found + '/' + v1.expected + ' · prev=' + (prev && prev.start));
+}
+
+/* 49) سجل العمليات المهيكل: العملية/الأسبوع/العدد/التاريخ/المستخدم/الحالة */
+{
+  LOG.logClear();
+  LOG.logAdd('ترحيل الأسبوع', 'تفاصيل الترحيل', { op: 'ترحيل', week: '4/10-10/10', count: 25, user: 'مدير', status: 'مكتمل' });
+  LOG.logAdd('تراجع عن ترحيل', 'تفاصيل التراجع', { op: 'تراجع', week: '4/10-10/10', count: 25, user: 'مدير', status: 'تم التراجع' });
+  LOG.logAdd('إرسال SMS', '10 رسائل', { op: 'إرسال SMS', count: 10, status: 'ناجح' });
+  LOG.logAdd('عملية قديمة', 'بلا حقول منظمة');
+  const rows = LOG.logRows(10);
+  ok('49. جدول سجل العمليات بأعمدته الستة + تفاصيل',
+    rows.length === 4 &&
+    rows[0].op === 'عملية قديمة' && rows[0].week === '—' && rows[0].user === '—' && rows[0].status === 'ناجح' &&
+    rows[1].op === 'إرسال SMS' && rows[1].count === '10' && rows[1].status === 'ناجح' &&
+    rows[2].op === 'تراجع' && rows[2].status === 'تم التراجع' && rows[2].week === '4/10-10/10' && rows[2].count === '25' &&
+    rows[3].op === 'ترحيل' && rows[3].user === 'مدير' && rows[3].status === 'مكتمل' && rows[3].week === '4/10-10/10' &&
+    rows.every((r) => r.time && r.time !== '—'),
+    rows.map((r) => r.op + ':' + r.status).join(' | '));
+  LOG.logClear();
+}
+
+/* 50) سجل إرسال الرسائل: اسم/هاتف/وقت/نص/حالة/سبب الخطأ */
+{
+  LOG.smsLogClear();
+  LOG.smsLogAdd({ name: 'مشرف أ', phone: '0591111111', body: 'نص الرسالة', ok: true, provider: 'api' });
+  LOG.smsLogAdd({ name: 'مشرف ب', phone: '12', body: 'نص الرسالة', ok: false, provider: 'api', error: 'رقم الهاتف غير صالح' });
+  const l = LOG.smsLogList();
+  ok('50. سجل الرسائل بالحقول الستة',
+    l.length === 2 && l[0].name === 'مشرف ب' && l[0].status === 'فشل' &&
+    l[0].error === 'رقم الهاتف غير صالح' && l[0].phone === '12' &&
+    l[1].ok === true && l[1].status === 'تم الإرسال' && l[1].body === 'نص الرسالة' && !!l[1].time,
+    l.length + ' سجل · ' + l[0].status + ' / ' + l[1].status);
+  LOG.smsLogClear();
+}
+
+/* 51) نصوص التراجع الدقيقة (§6/§7/§10) */
+{
+  ok('51. نصوص التراجع الدقيقة',
+    CFG.texts.undoButton === '↩ التراجع عن آخر ترحيل' &&
+    CFG.texts.undoConfirmTitle === 'التراجع عن عملية الترحيل' &&
+    CFG.texts.undoAsk === 'هل أنت متأكد من التراجع عن هذه العملية؟' &&
+    CFG.texts.undoConfirmAction === 'تأكيد التراجع' &&
+    CFG.texts.undoAbort === 'تعذر التحقق من السجلات المرحّلة، لذلك تم إيقاف عملية التراجع حفاظًا على البيانات.' &&
+    CFG.texts.undoSuccessTitle === 'تم التراجع عن عملية الترحيل' &&
+    CFG.texts.undoNoEntry === 'لا توجد عملية ترحيل قابلة للتراجع.',
+    CFG.texts.undoButton);
+}
+
+/* 52) التراجع بلا عملية سابقة = رفض صريح قبل أي استدعاء شبكة */
+{
+  const res = await MS.executeUndo({ entry: null, appsScriptUrl: 'https://x/exec' });
+  const resKeys = await MS.executeUndo({
+    entry: { id: 'z', ts: 1, status: 'مكتمل', migratedKeys: [], migratedRows: [], deleteTargets: [] },
+    appsScriptUrl: 'https://x/exec',
+  });
+  ok('52. تنفيذ التراجع بلا عملية/بمفاتيح ناقصة = إيقاف فوري',
+    res.ok === false && res.code === 'BLOCKED' && res.error === CFG.texts.undoNoEntry &&
+    resKeys.ok === false && resKeys.code === 'BLOCKED' && resKeys.error === CFG.texts.undoNoKeys,
+    res.code + ' / ' + resKeys.code);
+}
+
+/* 53) sheetId اختياري: إضافة للأرشيف والردود + حذف من أحدهما */
+{
+  const orig = globalThis.fetch;
+  let payload = null;
+  globalThis.fetch = async (url, opts) => {
+    payload = JSON.parse(opts.body);
+    return { ok: true, json: async () => ({ ok: true, appended: 1, skipped: 0, headerWritten: false, deleted: 1, expected: 1 }) };
+  };
+  try {
+    await SS.appendData({ rows: [['a']], weekLabel: '4/10-10/10', appsScriptUrl: 'https://x/exec', sheetId: CFG.sheetIds.programs });
+    const p1 = payload;
+    await SS.deleteResponseRows({ rows: [{ t: '1', s: 'a' }], appsScriptUrl: 'https://x/exec', sheetId: CFG.sheetIds.admin });
+    const p2 = payload;
+    await SS.appendData({ rows: [['b']], appsScriptUrl: 'https://x/exec' });
+    const p3 = payload;
+    await SS.deleteResponseRows({ rows: [{ t: '2', s: 'b' }], appsScriptUrl: 'https://x/exec' });
+    const p4 = payload;
+    ok('53. sheetId اختياري (ردود/أرشيف) مع الافتراضي السابق',
+      p1.action === 'append' && p1.sheetId === CFG.sheetIds.programs &&
+      p2.action === 'deleteRows' && p2.sheetId === CFG.sheetIds.admin &&
+      p3.action === 'append' && p3.sheetId === CFG.sheetIds.admin &&
+      p4.action === 'deleteRows' && p4.sheetId === CFG.sheetIds.programs,
+      [p1.sheetId === CFG.sheetIds.programs, p2.sheetId === CFG.sheetIds.admin, p3.sheetId === CFG.sheetIds.admin, p4.sheetId === CFG.sheetIds.programs].join(','));
+  } finally {
+    globalThis.fetch = orig;
+  }
+}
+
+/* 54) أيقونة التطبيق داخل المشروع + manifest + روابط HTML */
+{
+  const fs = require('fs');
+  const path = require('path');
+  const { fileURLToPath } = require('url');
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.webmanifest'), 'utf8'));
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  const iconOk = manifest.icons.every((i) => fs.existsSync(path.join(root, i.src)));
+  const sizesOk = [16, 32, 48, 72, 96, 128, 144, 152, 180, 192, 256, 384, 512]
+    .every((n) => fs.existsSync(path.join(root, 'assets', 'icons', 'icon-' + n + '.png')));
+  ok('54. أيقونات الهاتف داخل المشروع (بلا مسارات خارجية)',
+    iconOk && sizesOk &&
+    fs.existsSync(path.join(root, 'assets', 'icons', 'favicon.ico')) &&
+    fs.existsSync(path.join(root, 'assets', 'icons', 'maskable-512.png')) &&
+    fs.existsSync(path.join(root, 'assets', 'icons', 'icon.svg')) &&
+    manifest.name.includes('برامج المشرفين') && manifest.dir === 'rtl' && manifest.display === 'standalone' &&
+    html.includes('rel="manifest"') && html.includes('apple-touch-icon') && html.includes('theme-color'),
+    'icons=' + manifest.icons.length + ' · sizes=' + sizesOk);
+}
+
 /* سجل العمليات + أدوات */
 LOG.logAdd('اختبار', 'سطر تجريبي');
 ok('bonus. سجل العمليات', LOG.logList().length >= 1);

@@ -1,11 +1,11 @@
 /* تنبيه SMS — اختيار المشرفين + رسالة قابلة للتعديل + تأكيد + إرسال عبر طبقة SMSService */
 
 import { CFG } from '../config.js';
-import { escapeHtml } from '../utils.js';
-import { showModal, confirmModal, toast, emptyState } from './components.js';
-import { SMS_PROVIDERS, buildMessage, resolveRecipients, send, confirmText, typeLabel, STATE_TEMPLATES, stateTemplateKey } from '../services/smsService.js';
-import { logAdd } from '../services/logService.js';
-import { App, templateForKey, saveTemplate, go } from './app.js';
+import { escapeHtml, ltr } from '../utils.js';
+import { showModal, toast, emptyState, tableHtml } from './components.js';
+import { SMS_PROVIDERS, buildMessage, buildMessages, sendBatch, isValidPhone, failureReason, typeLabel, STATE_TEMPLATES, stateTemplateKey } from '../services/smsService.js';
+import { logAdd, smsLogAdd, smsLogList, smsLogClear } from '../services/logService.js';
+import { App, templateForKey, saveTemplate, go, requireAdmin } from './app.js';
 
 let local = {
   state: 'auto',
@@ -15,6 +15,9 @@ let local = {
   body: '',
   query: '',
 };
+
+/* حارس ضد الضغط المكرر: أثناء الإرسال لا يبدأ إرسال جديد */
+let sending = false;
 
 function keyOfState(state) {
   return state === CFG.typePlanning ? 'planning' : state === CFG.typeActual ? 'actual' : state;
@@ -99,7 +102,13 @@ export function render(root, app) {
 
     '<div class="sms-footer">' +
       '<div class="sms-count" id="s-count"></div>' +
-      '<button class="btn btn-primary btn-lg" id="s-send">📱 إرسال الرسائل</button>' +
+      '<button class="btn btn-primary btn-lg" id="s-send">📱 إرسال SMS</button>' +
+    '</div>' +
+
+    '<div class="card" id="s-log-card">' +
+      '<div class="card-head"><h3>📜 سجل إرسال الرسائل</h3>' +
+      '<button class="btn btn-sm btn-ghost" id="s-log-clear">🧹 مسح السجل</button></div>' +
+      '<div id="s-log">' + logHtml() + '</div>' +
     '</div>';
 
   const preview = () => {
@@ -108,9 +117,10 @@ export function render(root, app) {
     const name = target.length === 1 ? target[0].name : 'المشرف الكريم';
     root.querySelector('#s-preview').textContent = buildMessage(body, { week: app.week, type: local.type, supervisor: name });
     const cnt = root.querySelector('#s-count');
-    cnt.innerHTML = 'المستلمون: <b>' + (local.mode === 'all' ? allRows.length : selectedRows.length) + '</b> مشرف · النوع: <b>' +
-      typeLabel(local.type) + '</b>' +
-      (local.mode === 'all' && selectedRows.length ? '' : '');
+    const n = local.mode === 'all' ? allRows.length : selectedRows.length;
+    cnt.innerHTML = 'المستلمون: <b>' + n + '</b> مشرف · النوع: <b>' + typeLabel(local.type) + '</b>';
+    const sendBtn = root.querySelector('#s-send');
+    if (sendBtn && !sending) sendBtn.textContent = n ? '📱 إرسال SMS إلى ' + n + ' مشرفين' : '📱 إرسال SMS';
   };
 
   root.querySelector('#s-state').addEventListener('change', (e) => {
@@ -176,9 +186,43 @@ export function render(root, app) {
     render(root, app);
   });
 
-  root.querySelector('#s-send').addEventListener('click', () => doSend(app));
+  root.querySelector('#s-send').addEventListener('click', () => {
+    /* منع الضغط المكرر — لا إرسال مزدوج لنفس الرسالة */
+    if (sending) { toast(CFG.texts.smsBusy, 'warn'); return; }
+    doSend(app);
+  });
+
+  const logClearBtn = root.querySelector('#s-log-clear');
+  if (logClearBtn) logClearBtn.addEventListener('click', () => {
+    if (!requireAdmin('مسح سجل الرسائل')) return;
+    smsLogClear();
+    renderLog();
+    toast('تم مسح سجل الرسائل', 'ok');
+  });
 
   preview();
+}
+
+/* ---------- سجل الرسائل (§4) ---------- */
+
+function logHtml() {
+  const logs = smsLogList(40);
+  if (!logs.length) return emptyState('لا توجد رسائل مُرسلة بعد');
+  return tableHtml(['التاريخ والوقت', 'اسم المشرف', 'الهاتف', 'الحالة', 'المزوّد', 'الرسالة', 'الخطأ'],
+    logs.map((e) => [
+      ltr(e.time),
+      e.name,
+      ltr(e.phone || '—'),
+      e.ok ? 'تم الإرسال' : 'فشل',
+      e.provider || '—',
+      (e.body || '').slice(0, 60) + ((e.body || '').length > 60 ? '…' : ''),
+      e.error || '—',
+    ]));
+}
+
+function renderLog() {
+  const box = document.querySelector('#s-log');
+  if (box) box.innerHTML = logHtml();
 }
 
 function statusMini(r) {
@@ -201,7 +245,7 @@ async function doSend(app) {
   const body = root.querySelector('#s-body').value;
   const rows = local.mode === 'all' ? app.status.rows : app.status.rows.filter((r) => app.selected.has(r.nameNorm));
   if (!rows.length) {
-    toast('لم يتم اختيار أي مشرف', 'error');
+    toast(CFG.texts.smsSelectOne, 'error');
     return;
   }
   if (!body.trim()) {
@@ -209,32 +253,140 @@ async function doSend(app) {
     return;
   }
   const provider = local.provider;
-  confirmModal(confirmText(rows.length), async () => {
-    const resolved = resolveRecipients(rows, app.phones);
-    const name = rows.length === 1 ? rows[0].name : 'المشرف الكريم';
-    const finalBody = buildMessage(body, { week: app.week, type: local.type, supervisor: name });
-    const res = await send({ provider, recipients: resolved, body: finalBody, settings: app.settings });
-    logAdd('إرسال تنبيه', provider + ' · ' + rows.length + ' مشرفين · ' + typeLabel(local.type) + ' · ' + (res.ok ? 'نجاح' : 'فشل: ' + (res.error || res.code || '')));
-    if (provider === 'device' || provider === 'whatsapp' || provider === 'copy') {
-      showModal({
-        title: res.ok ? 'تمت العملية' : 'فشلت العملية',
-        body: '<p class="' + (res.ok ? 't-green' : 't-red') + '">' + escapeHtml(res.notice || res.error || '') + '</p>' +
-          '<p class="muted">ملاحظة: على الويب لا يمكن الإرسال الصامت — يُفتح تطبيق الرسائل/واتساب برسالة جاهزة، والإرسال الفعلي يُنفَّذ من التطبيق. الأرقام المدرجة: ' +
-          (res.phonesIncluded != null ? res.phonesIncluded : 0) + ' من ' + rows.length + '.</p>',
-        actions: [{ label: 'حسنًا', cls: 'btn-primary' }],
+  const entries = buildMessages(rows, body, { week: app.week, type: local.type }, app.phones);
+
+  /* التحقق من وجود رقم جوال صالح قبل فتح التأكيد */
+  const validPhones = entries.filter((e) => isValidPhone(e.phone)).length;
+  if (provider !== 'copy' && validPhones === 0) {
+    toast(CFG.texts.smsNoValidPhone, 'error');
+    return;
+  }
+  const noPhone = entries.length - validPhones;
+  const providerLabel = (SMS_PROVIDERS.find((p) => p.key === provider) || {}).label || provider;
+
+  showModal({
+    title: CFG.texts.smsConfirmTitle,
+    body:
+      '<p class="confirm-text">' + escapeHtml(CFG.texts.smsConfirmLine(rows.length)) + '</p>' +
+      '<p><b>' + escapeHtml(CFG.texts.smsAsk) + '</b></p>' +
+      '<ul class="export-summary">' +
+        '<li>طريقة الإرسال: <b>' + escapeHtml(providerLabel) + '</b></li>' +
+        '<li>أرقام جوال صالحة: <b>' + validPhones + '</b>' +
+          (noPhone ? ' · بدون رقم: <b>' + noPhone + '</b>' : '') + '</li>' +
+        '<li class="muted">رسالة مستقلة باسم كل مشرف — لا يُرسل إلا إلى المحددين.</li>' +
+      '</ul>',
+    actions: [
+      { label: CFG.texts.cancel, cls: 'btn-ghost' },
+      {
+        label: CFG.texts.smsConfirmAction,
+        cls: 'btn-primary',
+        onClick: async () => {
+          await runBatch(app, entries, provider);
+          return false;
+        },
+      },
+    ],
+  });
+}
+
+/* إرسال متسلسل مع نافذة تقدّم حيّة — تعطيل زر الإرسال ضد الضغط المكرر (§4) */
+async function runBatch(app, entries, provider) {
+  sending = true;
+  const sendBtn = document.querySelector('#tab-sms #s-send');
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '⏳ ' + CFG.texts.smsSending; }
+
+  let prog = null;
+  try {
+    prog = showModal({
+      title: CFG.texts.smsSending,
+      body:
+        '<div id="sms-prog">' +
+        '<p class="prog-line"><b id="sms-prog-done">' + escapeHtml(CFG.texts.smsProgress(0, entries.length)) + '</b></p>' +
+        '<ul class="export-summary">' +
+          '<li>تم الإرسال: <b id="sms-prog-sent" class="t-green">0</b></li>' +
+          '<li>فشل الإرسال: <b id="sms-prog-failed">0</b></li>' +
+          '<li>متبقٍ: <b id="sms-prog-left">' + entries.length + '</b></li>' +
+        '</ul>' +
+        '<p class="muted" id="sms-prog-current">—</p>' +
+        '<div class="progress"><div class="progress-bar" id="sms-prog-bar" style="width:0%"></div></div>' +
+        '</div>',
+      actions: [{ label: 'إغلاق', cls: 'btn-ghost', keepOpen: true }],
+    });
+
+    const set = (id, v) => { const el = prog.body.querySelector('#' + id); if (el) el.textContent = v; };
+    const res = await sendBatch({
+      provider,
+      entries,
+      settings: app.settings,
+      onProgress: (p) => {
+        set('sms-prog-done', CFG.texts.smsProgress(p.index, p.total));
+        set('sms-prog-sent', p.sent);
+        set('sms-prog-failed', p.failed);
+        set('sms-prog-left', p.remaining);
+        const cur = prog.body.querySelector('#sms-prog-current');
+        if (cur && p.item) cur.textContent = p.item.name;
+        const bar = prog.body.querySelector('#sms-prog-bar');
+        if (bar) bar.style.width = Math.round((p.index / Math.max(1, p.total)) * 100) + '%';
+      },
+    });
+
+    /* سجل بعد كل رسالة: الاسم والهاتف والوقت والنص والحالة وسبب الخطأ (§4/§17) */
+    (res.results || []).forEach((r, i) => {
+      const item = entries[i] || {};
+      smsLogAdd({
+        name: r.name || item.name || '',
+        phone: r.phone || item.phone || '',
+        body: item.body || '',
+        ok: r.ok,
+        provider: r.mode || provider,
+        error: r.ok ? '' : failureReason(r, item),
       });
-    } else {
-      showModal({
-        title: res.ok ? 'أكد المزوّد' : 'فشلت العملية',
-        body: '<p class="' + (res.ok ? 't-green' : 't-red') + '">' + escapeHtml(res.notice || res.error || '') + '</p>' +
-          (res.providerResponse ? '<pre class="code-block">' + escapeHtml(JSON.stringify(res.providerResponse, null, 2)) + '</pre>' : ''),
-        actions: [{ label: 'حسنًا', cls: 'btn-primary' }],
-      });
-    }
-    if (res.ok) {
+    });
+    logAdd('إرسال SMS',
+      (res.total || 0) + ' رسالة · تم الإرسال=' + res.sent + ' · فشل=' + res.failed + ' · ' + typeLabel(local.type),
+      { op: 'إرسال SMS', count: res.total, status: res.failed ? 'جزئي' : 'ناجح' });
+
+    prog.close();
+    prog = null;
+
+    const allOk = res.failed === 0;
+    const failLines = (res.results || [])
+      .map((r, i) => (r.ok ? null : CFG.texts.smsFailLine(r.name || (entries[i] || {}).name || '—', failureReason(r, entries[i] || {}))))
+      .filter(Boolean);
+    showModal({
+      title: allOk ? CFG.texts.smsDoneTitle : CFG.texts.smsPartialTitle,
+      body:
+        '<ul class="export-summary">' +
+          '<li>عدد الرسائل: <b>' + res.total + '</b></li>' +
+          '<li>تم الإرسال: <b class="t-green">' + res.sent + '</b></li>' +
+          '<li>فشل الإرسال: <b class="' + (res.failed ? 't-red' : '') + '">' + res.failed + '</b></li>' +
+        '</ul>' +
+        (failLines.length
+          ? '<div class="banner orphan-banner"><ul class="export-summary">' +
+            failLines.map((t) => '<li class="t-red">' + escapeHtml(t) + '</li>').join('') + '</ul></div>'
+          : '<p class="t-green">✅ لم تفشل أي رسالة.</p>') +
+        (provider !== 'api' && provider !== 'copy'
+          ? '<p class="muted">ملاحظة: الإرسال عبر فتح تطبيق الرسائل/واتساب برسالة جاهزة لكل مشرف (حسب آلية المشروع الحالية).</p>'
+          : ''),
+      actions: [{ label: 'حسنًا', cls: 'btn-primary' }],
+    });
+    renderLog();
+
+    if (allOk && res.sent > 0) {
       app.selected.clear();
       render(document.querySelector('#tab-sms'), app);
     }
-    return false;
-  }, { title: 'تأكيد إرسال التنبيه' });
+  } catch (e) {
+    if (prog) prog.close();
+    toast('تعذّر إكمال الإرسال: ' + String((e && e.message) || e), 'error');
+  } finally {
+    sending = false;
+    const b = document.querySelector('#tab-sms #s-send');
+    if (b) {
+      b.disabled = false;
+      const n = local.mode === 'all' ? app.status.rows.length
+        : app.status.rows.filter((r) => app.selected.has(r.nameNorm)).length;
+      b.textContent = n ? '📱 إرسال SMS إلى ' + n + ' مشرفين' : '📱 إرسال SMS';
+    }
+  }
 }

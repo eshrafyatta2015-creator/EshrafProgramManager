@@ -205,6 +205,7 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
       week: wk, plan, written, verify, user,
       deleted: 0, deleteExpected: delTargets.length,
       status: 'جزئي', pendingDelete: delTargets, untargeted,
+      deleteTargets: delTargets,
       detail: 'الحذف من الردود فشل: ' + (del.code || '') + ' ' + (del.error || ''),
     });
     logAdd('ترحيل الأسبوع', 'الأرشيف مكتمل لكن الحذف فشل ' + wk.label);
@@ -260,6 +261,7 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
     status: deleteOk && untargeted === 0 ? 'مكتمل' : 'جزئي',
     pendingDelete: deleteOk ? null : delTargets,
     untargeted,
+    deleteTargets: delTargets,
     detail: deleteOk
       ? 'تم الترحيل والحذف والتحقق'
       : 'الحذف لم يكتمل: متبقي=' + (delVerify.remaining || 0) + ' ترويسة=' + (delVerify.headerOk ? 'سليمة' : 'ناقصة'),
@@ -268,7 +270,8 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
   logAdd('ترحيل الأسبوع', 'الأسبوع ' + wk.label +
     ' · أُضيف=' + written.appended + ' · تحقق=' + verify.found + '/' + verify.expected +
     ' · محذوف=' + entry.deleted + '/' + deleteTargets.length +
-    ' · الحالة=' + entry.status + orphNote);
+    ' · الحالة=' + entry.status + orphNote,
+    { op: 'ترحيل', week: wk.label, count: written.appended, user: user || '—', status: entry.status });
 
   return {
     ok: true,
@@ -325,15 +328,19 @@ export async function retryDelete(entry, appsScriptUrl) {
 
 /* ---------- سجل الترحيل المهيكل (§29) ---------- */
 
-function saveEntry({ week, plan, written, verify, user, deleted, deleteExpected, status, pendingDelete, untargeted, detail }) {
+function saveEntry({ week, plan, written, verify, user, deleted, deleteExpected, status, pendingDelete, untargeted, detail, deleteTargets }) {
+  const list = storeGet(CFG.storage.migrations, []);
   const entry = {
     id: uid(),
+    opNo: list.length + 1,
     ts: Date.now(),
     time: formatDateTime(new Date()),
     weekStart: week.start,
+    weekEnd: week.end || '',
     weekLabel: week.label,
     records: plan.keep.length,
     supervisors: new Set(plan.keep.map((r) => r.supervisorNorm)).size,
+    supervisorsList: Array.from(new Set(plan.keep.map((r) => r.supervisor))).slice(0, 50),
     added: written.appended,
     skippedServer: written.skipped || 0,
     verified: verify.found,
@@ -346,12 +353,15 @@ function saveEntry({ week, plan, written, verify, user, deleted, deleteExpected,
     nextWeekLabel: '',
     pendingDelete: pendingDelete && pendingDelete.length ? pendingDelete : null,
     detail: detail || '',
+    /* معرّفات وصفوف العملية نفسها — أساس التراجع الآمن (§8): لا حذف عشوائي */
+    migratedKeys: plan.keep.map(recordKey),
+    migratedRows: plan.rows.slice(),
+    deleteTargets: (deleteTargets || []).map((t) => ({ t: t.t, s: t.s })),
   };
   const nk = nextWeek(week);
   entry.nextWeekLabel = nk ? nk.label : '';
-  const list = storeGet(CFG.storage.migrations, []);
   list.unshift(entry);
-  if (list.length > 100) list.length = 100;
+  if (list.length > (CFG.migrationKeep || 100)) list.length = CFG.migrationKeep || 100;
   storeSet(CFG.storage.migrations, list);
   return entry;
 }
@@ -393,4 +403,163 @@ export function historyForWeek(weekStart) {
 
 export function pendingDeleteEntry() {
   return migrationList().find((e) => e.pendingDelete && e.pendingDelete.length) || null;
+}
+
+/* ============ التراجع عن آخر عملية ترحيل (§6-§11) ============
+   قاعدة حاكمة: لا يُنفَّذ التراجع إلا بتحديد 100% لسجلات العملية نفسها.
+   أي شك ⇒ إيقاف كامل دون لمس أي بيانات. */
+
+/* آخر عملية ناجحة وقابلة للتراجع (لا تراجع عن الأقدم إذا وُجد أحدث) */
+export function lastUndoableEntry() {
+  const list = migrationList();
+  return list.find((e) =>
+    e.status === 'مكتمل' &&
+    !(e.pendingDelete && e.pendingDelete.length) &&
+    e.migratedKeys && e.migratedKeys.length &&
+    e.migratedRows && e.migratedRows.length &&
+    e.deleteTargets && e.deleteTargets.length
+  ) || null;
+}
+
+/* مانع التراجع (منطق خالص) — يُرجع رسالة التوقف أو null إذا كانت العملية صالحة */
+export function undoBlockReason(entry, list) {
+  if (!entry) return CFG.texts.undoNoEntry;
+  const all = list || migrationList();
+  if (entry.status === 'REVERSED') return CFG.texts.undoUndone;
+  if (entry.status !== 'مكتمل') return CFG.texts.undoIncomplete;
+  if (entry.pendingDelete && entry.pendingDelete.length) return CFG.texts.undoIncomplete;
+  const newer = all.find((e) =>
+    e.id !== entry.id && e.ts > entry.ts &&
+    e.status === 'مكتمل' && !(e.pendingDelete && e.pendingDelete.length));
+  if (newer) return CFG.texts.undoNewer;
+  if (!entry.migratedKeys || !entry.migratedKeys.length ||
+      !entry.migratedRows || !entry.migratedRows.length ||
+      !entry.deleteTargets || !entry.deleteTargets.length) return CFG.texts.undoNoKeys;
+  return null;
+}
+
+/* تحقق بحت: كل مفاتيح العملية موجودة في الأرشيف؟ (منطق خالص) */
+export function verifyKeysInArchive(entry, archiveRecords) {
+  const expected = (entry && entry.migratedKeys) || [];
+  const keys = new Set((archiveRecords || []).map(recordKey));
+  let found = 0;
+  for (const k of expected) if (keys.has(k)) found++;
+  return { ok: expected.length > 0 && found === expected.length, found, expected: expected.length };
+}
+
+/* الأسبوع السابق لعملية الترحيل (الأسابيع مرتّبة تنازلياً) */
+export function weekBeforeEntry(entry, weeks) {
+  const list = weeks || [];
+  const i = list.findIndex((w) => entry && w.start === entry.weekStart);
+  if (i >= 0 && i + 1 < list.length) return list[i + 1];
+  return null;
+}
+
+/* تنفيذ التراجع: تحقق ← استرجاع الردود ← تحقق ← حذف من الأرشيف ← تحقق ← REVERSED */
+export async function executeUndo({ entry, appsScriptUrl, user }) {
+  const started = Date.now();
+  const ms = () => Date.now() - started;
+  const target = entry || lastUndoableEntry();
+
+  const reason = undoBlockReason(target);
+  if (reason) return { ok: false, code: 'BLOCKED', error: reason, ms: ms() };
+  if (!appsScriptUrl) {
+    return { ok: false, code: 'NOT_CONFIGURED', error: 'لم يتم ضبط رابط Apps Script بعد (الإعدادات ← ربط الكتابة).', ms: ms() };
+  }
+
+  /* (1) قراءة طازجة للأرشيف والتحقق 100% من سجلات العملية */
+  let freshArchive;
+  try {
+    freshArchive = await fetchArchiveCsv();
+  } catch (e) {
+    return { ok: false, code: 'READ_ERROR', error: CFG.texts.undoAbort, detail: String((e && e.message) || e), ms: ms() };
+  }
+  const check = verifyKeysInArchive(target, freshArchive.records);
+  if (!check.ok) {
+    logAdd('تراجع عن ترحيل', 'أُوقف قبل أي تعديل — تحقق الأرشيف ' + check.found + '/' + check.expected);
+    return { ok: false, code: 'VERIFY_FAILED', error: CFG.texts.undoAbort, verify: check, ms: ms() };
+  }
+
+  /* (2) استرجاع سجلات الردود — قبل أي حذف */
+  const restore = await appendData({
+    rows: target.migratedRows,
+    weekLabel: target.weekLabel,
+    headerRow: null,
+    appsScriptUrl,
+    sheetId: CFG.sheetIds.programs,
+  });
+  if (!restore.ok) {
+    logAdd('تراجع عن ترحيل', 'فشل استرجاع الردود: ' + (restore.code || '') + ' ' + (restore.error || ''));
+    return { ok: false, code: 'RESTORE_FAILED', error: restore.error || CFG.texts.undoAbort, archiveIntact: true, ms: ms() };
+  }
+
+  /* (3) التحقق من عودة السجلات إلى ملف الردود */
+  let restoreCheck;
+  try {
+    const resp = await fetchResponsesCsv();
+    const keys = new Set(resp.parsed.records.map(recordKey));
+    let found = 0;
+    for (const k of target.migratedKeys) if (keys.has(k)) found++;
+    restoreCheck = { ok: found === target.migratedKeys.length, found, expected: target.migratedKeys.length };
+  } catch (e) {
+    restoreCheck = { ok: false, found: -1, expected: target.migratedKeys.length, error: String((e && e.message) || e) };
+  }
+  if (!restoreCheck.ok) {
+    logAdd('توقف التراجع', 'تحقّق استرجاع الردود ' + restoreCheck.found + '/' + restoreCheck.expected + ' — الأرشيف لم يُمس');
+    return {
+      ok: false, code: 'RESTORE_VERIFY_FAILED', error: CFG.texts.undoAbort,
+      verify: restoreCheck, restored: restore.appended, archiveIntact: true, ms: ms(),
+    };
+  }
+
+  /* (4) حذف سجلات العملية من الأرشيف حصراً (مفاتيح محفوظة — لا حذف عشوائي) */
+  const del = await deleteResponseRows({
+    rows: target.deleteTargets,
+    appsScriptUrl,
+    sheetId: CFG.sheetIds.admin,
+  });
+  if (!del.ok) {
+    logAdd('تراجع عن ترحيل', 'استُرجعت الردود لكن فشل حذف الأرشيف: ' + (del.code || '') + ' ' + (del.error || ''));
+    return { ok: false, code: 'ARCHIVE_DELETE_FAILED', error: del.error || 'تعذّر حذف سجلات العملية من الأرشيف.', restored: true, ms: ms() };
+  }
+
+  /* (5) التحقق من حذف سجلات العملية فقط */
+  let delCheck;
+  try {
+    const after = await fetchArchiveCsv();
+    const keys = new Set(after.records.map(recordKey));
+    let remaining = 0;
+    for (const k of target.migratedKeys) if (keys.has(k)) remaining++;
+    delCheck = { ok: remaining === 0, remaining, deleted: del.deleted };
+  } catch (e) {
+    delCheck = { ok: false, remaining: -1, error: String((e && e.message) || e) };
+  }
+  if (!delCheck.ok) {
+    logAdd('تراجع عن ترحيل', 'تحقّق حذف الأرشيف: متبقي=' + delCheck.remaining);
+    return { ok: false, code: 'ARCHIVE_VERIFY_FAILED', error: CFG.texts.undoAbort, verify: delCheck, restored: true, ms: ms() };
+  }
+
+  /* (6) تحديث سجل العملية إلى REVERSED — السجل نفسه لا يُحذف */
+  const updated = updateEntry(target.id, {
+    status: 'REVERSED',
+    reversedAt: formatDateTime(new Date()),
+    reversedBy: user || '—',
+    undoDetail: 'استُرجع ' + target.migratedKeys.length + ' سجل إلى الردود وحُذفت من الأرشيف',
+  });
+  logAdd('تراجع عن ترحيل',
+    'الأسبوع ' + target.weekLabel + ' · استُرجع=' + target.migratedKeys.length +
+    ' · حُذف من الأرشيف=' + del.deleted + ' · الحالة=REVERSED',
+    { op: 'تراجع', week: target.weekLabel, count: target.migratedKeys.length, user: user || '—', status: 'تم التراجع' });
+
+  return {
+    ok: true,
+    entry: updated,
+    count: target.migratedKeys.length,
+    restored: restore.appended,
+    restoredSkipped: restore.skipped || 0,
+    deleted: del.deleted,
+    weekLabel: target.weekLabel,
+    weekStart: target.weekStart,
+    ms: ms(),
+  };
 }

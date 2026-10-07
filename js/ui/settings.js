@@ -3,7 +3,7 @@
 import { CFG } from '../config.js';
 import { escapeHtml, storeGet, storeSet, formatDateTime, csvParse, normName, downloadBlob, csvSerialize } from '../utils.js';
 import { tableHtml, toast, showModal, confirmModal, emptyState, htmlCell } from './components.js';
-import { logList, logClear, logAdd } from '../services/logService.js';
+import { logList, logClear, logAdd, logRows } from '../services/logService.js';
 import { getHeaderSnapshot, saveHeaderSnapshot, clearHeaderSnapshot, defaultHeaderRow, headerMapFor } from '../services/headerService.js';
 import { App, saveSettings, savePhones, saveTemplate, isAdmin, go, templateFor } from './app.js';
 
@@ -90,8 +90,18 @@ export function render(root, app) {
 
     card('🧾 سجل العمليات',
       (logs.length
-        ? tableHtml(['الوقت', 'العملية', 'التفاصيل'],
-            logs.slice(0, 100).map((l) => [l.time, l.type, l.detail])) +
+        ? tableHtml(['العملية', 'الأسبوع', 'العدد', 'التاريخ', 'المستخدم', 'الحالة', 'التفاصيل'],
+            logRows(100).map((r) => [
+              r.op,
+              r.week,
+              r.count,
+              r.time,
+              r.user,
+              r.status === 'REVERSED' || r.status === 'تم التراجع'
+                ? htmlCell('<span class="pill mini">↩ ' + escapeHtml(r.status) + '</span>')
+                : r.status,
+              htmlCell('<button class="btn btn-sm btn-ghost" data-log-detail="' + escapeHtml(r.id) + '">🔍 فتح</button>'),
+            ])) +
           '<div class="btn-row"><button class="btn btn-ghost" id="set-log-clear">🗑 مسح السجل</button></div>'
         : emptyState('لا توجد عمليات بعد'))) +
 
@@ -240,6 +250,25 @@ export function render(root, app) {
       return true;
     });
   });
+
+  /* تفاصيل العملية (§17) */
+  root.querySelectorAll('[data-log-detail]').forEach((b) => b.addEventListener('click', () => {
+    const row = logRows(500).find((r) => r.id === b.dataset.logDetail);
+    if (!row) return;
+    showModal({
+      title: 'تفاصيل العملية',
+      body: '<ul class="export-summary">' +
+        '<li>العملية: <b>' + escapeHtml(row.op) + '</b></li>' +
+        '<li>الأسبوع: <b>' + escapeHtml(row.week) + '</b></li>' +
+        '<li>العدد: <b>' + escapeHtml(row.count) + '</b></li>' +
+        '<li>التاريخ: <b>' + escapeHtml(row.time) + '</b></li>' +
+        '<li>المستخدم: <b>' + escapeHtml(row.user) + '</b></li>' +
+        '<li>الحالة: <b>' + escapeHtml(row.status) + '</b></li>' +
+        '</ul>' +
+        '<p class="muted">التفاصيل: ' + escapeHtml(row.detail || '—') + '</p>',
+      actions: [{ label: 'إغلاق', cls: 'btn-primary' }],
+    });
+  }));
 
   /* بيانات */
   root.querySelector('#set-refresh').addEventListener('click', () => {

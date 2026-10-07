@@ -82,17 +82,29 @@ export function parseProgramsCsv(text) {
   if (!rows.length) return { headerWeek: null, header: [], records: [], excluded, rawRows: 0 };
   const header = rows[0];
   const headerWeek = parseWeekLabel(cell(header, 2));
+  let currentWeek = headerWeek;
   let rawRows = 0;
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
     if (r.every((c) => !String(c == null ? '' : c).trim())) continue;
+
+    /* وسم قسم (MAGIC_HEADER + تسمية الأسبوع) — يُسند بعده للأسبوع المعلن،
+       مثل parseAdminCsv. تُكتب عند الترحيل/التراجع ولا تُعد سجلاً ولا صف ضوضاء. */
+    const c0 = cell(r, 0);
+    const c0IsMagic = normName(c0) === normName(CFG.magicHeader) || normName(c0) === normName('اسم المشرف');
+    if (c0IsMagic) {
+      const w = parseWeekLabel(cell(r, 1));
+      if (w) currentWeek = w;
+      continue;
+    }
+
     rawRows++;
     const sup = cell(r, 1);
     if (!sup) { excluded.push({ row: i, supervisor: '', timestamp: cell(r, 0), reason: 'بلا اسم مشرف' }); continue; }
     if (isNoiseSupervisor(sup)) { excluded.push({ row: i, supervisor: sup, timestamp: cell(r, 0), reason: 'ترويسة أو صف ضوضاء' }); continue; }
     const tsRaw = cell(r, 0);
     const ts = parseTimestamp(tsRaw);
-    const week = weekForResponse(ts, headerWeek);
+    const week = weekForResponse(ts, currentWeek);
     if (!week) { excluded.push({ row: i, supervisor: sup, timestamp: tsRaw, reason: 'لا طابع زمني ولا أسبوع ترويسة' }); continue; }
     const days = [];
     for (let d = 0; d < 6; d++) {
@@ -110,11 +122,11 @@ export function parseProgramsCsv(text) {
       type: validType(cell(r, 16)),
       timestamp: tsRaw,
       tsTime: ts ? ts.getTime() : null,
-      early: !!(headerWeek && ts && isoDate(ts) < headerWeek.start),
+      early: !!(currentWeek && ts && isoDate(ts) < currentWeek.start),
       rowIndex: i,
     });
   }
-  return { headerWeek, header, records, excluded, rawRows };
+  return { headerWeek, header, records, excluded, rawRows, currentWeek };
 }
 
 /* ---------- ADMIN: الأرشيف متعدد الأسابيع (1rthlma) ---------- */

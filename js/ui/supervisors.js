@@ -2,7 +2,7 @@
 
 import { CFG } from '../config.js';
 import { escapeHtml, ltr } from '../utils.js';
-import { statusPill, emptyState, htmlCell } from './components.js';
+import { statusPill, emptyState, htmlCell, toast } from './components.js';
 import { filterRows } from '../services/statusService.js';
 import { App, go } from './app.js';
 
@@ -54,6 +54,7 @@ export function render(root, app) {
         '<button class="chip ' + (f.filter === x.key ? 'active' : '') + '" data-filter="' + x.key + '">' + x.label + '</button>').join('') +
       '</div>' +
       '<div class="toolbar-meta">' +
+        '<button class="btn btn-sm" data-action="select-visible">☑ تحديد الظاهرين</button>' +
         '<span class="count-pill">' + rows.length + ' / ' + all.length + '</span>' +
         (selCount ? '<span class="count-pill sel">☑ ' + selCount + ' محدد للتنبيه</span>' : '') +
         (selCount ? '<button class="btn btn-sm btn-primary" data-action="go-sms">📱 إرسال تنبيه للمحدد</button>' : '') +
@@ -106,4 +107,10 @@ export function render(root, app) {
   if (goSms) goSms.addEventListener('click', () => { App.smsPrefill = { mode: 'selected' }; go('sms'); });
   const clr = root.querySelector('[data-action="clear-sel"]');
   if (clr) clr.addEventListener('click', () => { App.selected.clear(); render(root, app); });
+  const selVis = root.querySelector('[data-action="select-visible"]');
+  if (selVis) selVis.addEventListener('click', () => {
+    rows.forEach((r) => App.selected.add(r.nameNorm));
+    render(root, app);
+    toast('تم تحديد ' + rows.length + ' مشرفًا ظاهرًا', 'ok');
+  });
 }

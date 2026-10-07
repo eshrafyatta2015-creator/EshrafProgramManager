@@ -87,7 +87,7 @@ export function getDataFromCache() {
 
 /* الكتابة: عبر Google Apps Script Web App فقط (رابط CSV للقراءة فقط) */
 
-export async function appendData({ rows, markerRow, weekLabel, headerRow, appsScriptUrl }) {
+export async function appendData({ rows, markerRow, weekLabel, headerRow, appsScriptUrl, sheetId }) {
   if (!appsScriptUrl) {
     return { ok: false, code: 'NOT_CONFIGURED', error: 'لم يتم ضبط رابط Apps Script بعد (الإعدادات ← ربط الكتابة).' };
   }
@@ -104,7 +104,7 @@ export async function appendData({ rows, markerRow, weekLabel, headerRow, appsSc
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
           action: 'append',
-          sheetId: CFG.sheetIds.admin,
+          sheetId: sheetId || CFG.sheetIds.admin,
           rows,
           weekLabel: weekLabel || '',
           headerRow: headerRow || null,
@@ -125,8 +125,9 @@ export async function appendData({ rows, markerRow, weekLabel, headerRow, appsSc
   }
 }
 
-/* حذف صفوف محددة من ردود الاستمارة — لا يُستدعى إلا بعد تحقق فعلي من وصولها للأرشيف */
-export async function deleteResponseRows({ rows, appsScriptUrl }) {
+/* حذف صفوف محددة — لا يُستدعى إلا بعد تحقق فعلي من وصولها للأرشيف.
+   sheetId اختياري: الردود (افتراضي) أو الأرشيف (أثناء التراجع). */
+export async function deleteResponseRows({ rows, appsScriptUrl, sheetId }) {
   if (!appsScriptUrl) {
     return { ok: false, code: 'NOT_CONFIGURED', error: 'لم يتم ضبط رابط Apps Script بعد (الإعدادات ← ربط الكتابة).', deleted: 0 };
   }
@@ -141,7 +142,7 @@ export async function deleteResponseRows({ rows, appsScriptUrl }) {
       resp = await fetch(appsScriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'deleteRows', sheetId: CFG.sheetIds.programs, rows }),
+        body: JSON.stringify({ action: 'deleteRows', sheetId: sheetId || CFG.sheetIds.programs, rows }),
         signal: ctrl.signal,
       });
     } finally {
