@@ -28,7 +28,7 @@ function validType(v) {
   return v === CFG.typePlanning || v === CFG.typeActual ? v : null;
 }
 
-/* ---------- LISTS: مدارس + فعاليات + مشرفون (بمعرّف فريد) ---------- */
+/* ---------- LISTS: مدارس + فعاليات + مشرفون (عمود id = رقم الهاتف، للمطابقة بالاسم فقط) ---------- */
 
 export function parseListsCsv(text) {
   const rows = csvParse(text);
@@ -46,7 +46,8 @@ export function parseListsCsv(text) {
     if (school) schools.push(school);
     if (activity) activities.push(activity);
     if (sup && !isNoiseSupervisor(sup)) {
-      supervisors.push({ name: sup, id: /^\d{6,}$/.test(id) ? id : '' });
+      /* العمود id في الملف المرجعي هو رقم الهاتف — لا يُستخدم في المطابقة أبداً */
+      supervisors.push({ name: sup, phone: /^\d{6,}$/.test(id) ? id : '' });
     }
   }
   return {
@@ -62,7 +63,7 @@ export function parseListsCsv(text) {
 export function parseProgramsCsv(text) {
   const rows = csvParse(text);
   const records = [];
-  if (!rows.length) return { headerWeek: null, records: [] };
+  if (!rows.length) return { headerWeek: null, header: [], records: [] };
   const header = rows[0];
   const headerWeek = parseWeekLabel(cell(header, 2));
   for (let i = 1; i < rows.length; i++) {
@@ -92,7 +93,7 @@ export function parseProgramsCsv(text) {
       rowIndex: i,
     });
   }
-  return { headerWeek, records };
+  return { headerWeek, header, records };
 }
 
 /* ---------- ADMIN: الأرشيف متعدد الأسابيع (1rthlma) ---------- */
@@ -133,7 +134,41 @@ export function parseAdminCsv(text) {
       }
     }
 
-    if (TS_RE.test(c0)) { skipped.timestampLike++; continue; }
+    if (TS_RE.test(c0)) {
+      /* صف بتنسيق ردود الاستمارة (timestamp في العمود A) — يُقرأ ويُستخرج أسبوعه من الطابع الزمني */
+      const ts = parseTimestamp(c0);
+      if (!ts) { skipped.timestampLike++; continue; }
+      const sup = c1;
+      if (!sup || isNoiseSupervisor(sup)) { skipped.noise++; continue; }
+      const tsWeek = weekOfDate(isoDate(ts));
+      const w = tsWeek || currentWeek;
+      if (!w) { skipped.noise++; continue; }
+      const days = [];
+      let nonEmptyDays = 0;
+      for (let d = 0; d < 6; d++) {
+        const school = cell(r, 2 + d * 2);
+        const activity = cell(r, 3 + d * 2);
+        if (school || activity) nonEmptyDays++;
+        days.push({ school, activity });
+      }
+      if (!nonEmptyDays) { skipped.noise++; continue; }
+      if (!weeks.some((x) => x.start === w.start)) weeks.push(w);
+      records.push({
+        source: 'admin',
+        supervisor: sup,
+        supervisorNorm: normName(sup),
+        weekStart: w.start,
+        week: w,
+        days,
+        notes: cell(r, 14),
+        code: cell(r, 15),
+        type: validType(cell(r, 16)),
+        timestamp: c0,
+        tsTime: ts.getTime(),
+        rowIndex: i,
+      });
+      continue;
+    }
     if (isNoiseSupervisor(c0)) { skipped.noise++; continue; }
     if (!currentWeek) { skipped.noise++; continue; }
 
@@ -174,22 +209,22 @@ export function parseAdminCsv(text) {
   return { weeks, records, skipped };
 }
 
-/* ---------- المشرفون الموحدون (مفتاح فريد: رقم الهوية ثم الاسم) ---------- */
+/* ---------- المشرفون الموحدون (مفتاح المطابقة: الاسم فقط — id/phone لا تُستخدم للمطابقة) ---------- */
 
 export function buildMasterSupervisors(listParsed, adminRecords, programRecords) {
   const map = new Map();
-  const put = (name, id) => {
+  const put = (name, phone) => {
     if (isNoiseSupervisor(name)) return;
     const k = normName(name);
     if (!k) return;
     const existing = map.get(k);
     if (existing) {
-      if (id && !existing.id) existing.id = id;
+      if (phone && !existing.phone) existing.phone = phone;
     } else {
-      map.set(k, { name: name.trim(), id: id || '', nameNorm: k });
+      map.set(k, { name: name.trim(), phone: phone || '', nameNorm: k });
     }
   };
-  for (const s of listParsed.supervisors) put(s.name, s.id);
+  for (const s of listParsed.supervisors) put(s.name, s.phone);
   for (const r of adminRecords) put(r.supervisor, '');
   for (const r of programRecords) put(r.supervisor, '');
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'ar'));
@@ -202,7 +237,7 @@ export function masterFromLists(listParsed) {
     if (isNoiseSupervisor(s.name)) continue;
     const k = normName(s.name);
     if (!k || map.has(k)) continue;
-    map.set(k, { name: s.name.trim(), id: s.id || '', nameNorm: k });
+    map.set(k, { name: s.name.trim(), phone: s.phone || '', nameNorm: k });
   }
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'ar'));
 }

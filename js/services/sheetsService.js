@@ -1,17 +1,8 @@
 /* GoogleSheetsService — قراءة CSV + كتابة عبر Apps Script (بدون ادعاء نجاح) */
 
 import { CFG } from '../config.js';
-import { fetchText, storeGet, storeSet, normName } from '../utils.js';
+import { fetchText, storeGet, storeSet } from '../utils.js';
 import { parseAdminCsv, parseProgramsCsv, parseListsCsv, masterFromLists, findOrphanSupervisors, allWeeks } from '../models.js';
-
-export function recordKey(r) {
-  return [
-    r.weekStart || '',
-    r.supervisorNorm || normName(r.supervisor),
-    r.type || '',
-    (r.days || []).map((d) => (d.school || '') + '~' + (d.activity || '')).join('~'),
-  ].join('|');
-}
 
 function cachePayload(data) {
   return {
@@ -96,7 +87,7 @@ export function getDataFromCache() {
 
 /* الكتابة: عبر Google Apps Script Web App فقط (رابط CSV للقراءة فقط) */
 
-export async function appendData({ rows, markerRow, weekLabel, appsScriptUrl }) {
+export async function appendData({ rows, markerRow, weekLabel, headerRow, appsScriptUrl }) {
   if (!appsScriptUrl) {
     return { ok: false, code: 'NOT_CONFIGURED', error: 'لم يتم ضبط رابط Apps Script بعد (الإعدادات ← ربط الكتابة).' };
   }
@@ -111,7 +102,14 @@ export async function appendData({ rows, markerRow, weekLabel, appsScriptUrl }) 
       resp = await fetch(appsScriptUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'append', sheetId: CFG.sheetIds.admin, rows, weekLabel: weekLabel || '', marker: markerRow || null }),
+        body: JSON.stringify({
+          action: 'append',
+          sheetId: CFG.sheetIds.admin,
+          rows,
+          weekLabel: weekLabel || '',
+          headerRow: headerRow || null,
+          marker: markerRow || null,
+        }),
         signal: ctrl.signal,
       });
     } finally {
@@ -121,23 +119,53 @@ export async function appendData({ rows, markerRow, weekLabel, appsScriptUrl }) 
     if (!resp.ok || !data || data.ok !== true) {
       return { ok: false, code: 'SCRIPT_ERROR', error: (data && data.error) || ('HTTP ' + resp.status), raw: data };
     }
-    return { ok: true, appended: data.appended | 0, skipped: data.skipped | 0 };
+    return { ok: true, appended: data.appended | 0, skipped: data.skipped | 0, headerWritten: !!data.headerWritten };
   } catch (e) {
     return { ok: false, code: 'NETWORK', error: String((e && e.message) || e) };
   }
 }
 
-export async function verifyAppendInCsv(markerSup, weekStart) {
-  if (!markerSup) return { ok: false, error: 'لا يوجد ماركر' };
-  try {
-    const txt = await fetchText(CFG.sheets.admin + '&nc=' + Date.now(), CFG.requestTimeoutMs);
-    const parsed = parseAdminCsv(txt);
-    const found = parsed.records.some((r) =>
-      r.supervisor === markerSup && (!weekStart || r.weekStart === weekStart));
-    return { ok: found, total: parsed.records.length };
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
+/* حذف صفوف محددة من ردود الاستمارة — لا يُستدعى إلا بعد تحقق فعلي من وصولها للأرشيف */
+export async function deleteResponseRows({ rows, appsScriptUrl }) {
+  if (!appsScriptUrl) {
+    return { ok: false, code: 'NOT_CONFIGURED', error: 'لم يتم ضبط رابط Apps Script بعد (الإعدادات ← ربط الكتابة).', deleted: 0 };
   }
+  if (!rows || !rows.length) {
+    return { ok: true, deleted: 0, expected: 0 };
+  }
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 30000);
+    let resp;
+    try {
+      resp = await fetch(appsScriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'deleteRows', sheetId: CFG.sheetIds.programs, rows }),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(t);
+    }
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok || !data || data.ok !== true) {
+      return { ok: false, code: 'SCRIPT_ERROR', error: (data && data.error) || ('HTTP ' + resp.status), raw: data, deleted: 0, expected: rows.length };
+    }
+    return { ok: true, deleted: data.deleted | 0, expected: data.expected | rows.length };
+  } catch (e) {
+    return { ok: false, code: 'NETWORK', error: String((e && e.message) || e), deleted: 0, expected: rows.length };
+  }
+}
+
+/* قراءة طازجة (بدون كاش) للتحقق بعد الكتابة/الحذف */
+export async function fetchArchiveCsv() {
+  const txt = await fetchText(CFG.sheets.admin + '&nc=' + Date.now(), CFG.requestTimeoutMs);
+  return parseAdminCsv(txt);
+}
+
+export async function fetchResponsesCsv() {
+  const txt = await fetchText(CFG.sheets.programs + '&nc=' + Date.now(), CFG.requestTimeoutMs);
+  return { parsed: parseProgramsCsv(txt), raw: txt };
 }
 
 export function getSupervisors(data) {

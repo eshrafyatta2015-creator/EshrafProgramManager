@@ -1,27 +1,12 @@
-/* ExportService — Excel حقيقي (SheetJS) + CSV + صفوف تصدير إلى الأرشيف */
+/* ExportService — Excel حقيقي (SheetJS) + CSV + صفوف بتنسيق ردود الاستمارة للترحيل */
 
 import { CFG } from '../config.js';
-import { csvSerialize, downloadBlob, normName, formatDate } from '../utils.js';
-import { recordKey } from './sheetsService.js';
+import { csvSerialize, downloadBlob, formatDate } from '../utils.js';
 
-const ADMIN_NOTES_HEADER = 'الملاحظات لبرنامج التخطيط او الفعلي ( يتم رصد ملاحظات لبرنامج التخطيط او ما تم تنفيذه في البرنامج الفعلي بالمقارنه مع البرنامج السابق مثلا تم تغيير المدرسه او المعلم بسبب.... الخ)';
-const ADMIN_TYPE_HEADER = 'نوع البرنامج  (فعلي او تخطيط اختر من القائمه)';
-const ADMIN_CODE_HEADER = 'Valid Code(خاص بالتطبيق)';
-
-export function adminWeekHeaderRow(weekLabel) {
-  const row = [CFG.magicHeader];
-  for (const d of CFG.days) {
-    row.push(weekLabel + ' ' + d.sheet);
-    row.push('تفاصيل الايام ' + d.sheet);
-  }
-  row.push(ADMIN_NOTES_HEADER);
-  row.push(ADMIN_CODE_HEADER);
-  row.push(ADMIN_TYPE_HEADER);
-  return row;
-}
-
-export function recordToAdminRow(r) {
-  const out = [r.supervisor];
+/* صف بتنسيق ردود الاستمارة (17 عموداً): Timestamp، اسم المشرف، 6 أيام، ملاحظات، كود، نوع
+   — يُضاف أسفل الأرشيف مباشرةً (ترويسة واحدة أعلى الملف فقط، لا ترويسة لكل أسبوع) */
+export function recordToResponsesRow(r) {
+  const out = [r.timestamp || '', r.supervisor];
   for (let i = 0; i < 6; i++) {
     const day = (r.days && r.days[i]) || { school: '', activity: '' };
     out.push(day.school || '');
@@ -33,30 +18,8 @@ export function recordToAdminRow(r) {
   return out;
 }
 
-export function recordsToAdminRows(records) {
-  return records.map(recordToAdminRow);
-}
-
-export function dedupeAgainstExisting(existingRecords, newRecords) {
-  const seen = new Set(existingRecords.map(recordKey));
-  const keep = [];
-  let skipped = 0;
-  for (const r of newRecords) {
-    const k = recordKey(r);
-    if (seen.has(k)) { skipped++; continue; }
-    seen.add(k);
-    keep.push(r);
-  }
-  return { keep, skipped };
-}
-
-export function buildExportPlan(existingRecords, newRecords, week) {
-  const { keep, skipped } = dedupeAgainstExisting(existingRecords, newRecords);
-  const rows = [];
-  const needsHeader = keep.length > 0 && !existingRecords.some((r) => r.weekStart === week.start);
-  if (needsHeader) rows.push(adminWeekHeaderRow(week.label));
-  for (const r of keep) rows.push(recordToAdminRow(r));
-  return { rows, keep, skipped, needsHeader };
+export function recordsToResponsesRows(records) {
+  return records.map(recordToResponsesRow);
 }
 
 export function downloadCsv(filename, rows) {

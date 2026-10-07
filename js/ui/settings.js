@@ -4,10 +4,37 @@ import { CFG } from '../config.js';
 import { escapeHtml, storeGet, storeSet, formatDateTime, csvParse, normName, downloadBlob, csvSerialize } from '../utils.js';
 import { tableHtml, toast, showModal, confirmModal, emptyState, htmlCell } from './components.js';
 import { logList, logClear, logAdd } from '../services/logService.js';
+import { getHeaderSnapshot, saveHeaderSnapshot, clearHeaderSnapshot, defaultHeaderRow, headerMapFor } from '../services/headerService.js';
 import { App, saveSettings, savePhones, saveTemplate, isAdmin, go, templateFor } from './app.js';
 
 function card(title, body, id) {
   return '<div class="card settings-card"' + (id ? ' id="' + id + '"' : '') + '><h3>' + title + '</h3>' + body + '</div>';
+}
+
+/* بطاقة ترويسة ملف الردود: عرض + حفظ نسخة + استعادة (§26/§27) */
+function headerCardHtml(app) {
+  const info = headerMapFor(app.data);
+  const snap = getHeaderSnapshot();
+  const originLabel = info.origin === 'live' ? 'ملف الردود (حي)' : info.origin === 'snapshot' ? 'نسخة محفوظة داخل النظام' : 'افتراضي مبني من الإعدادات';
+  return '<p class="muted">بنية ترويسة الردود الحالية — تُحفظ نسخة Header داخل إعدادات النظام لاستعادتها إذا فُقدت الترويسة من الملف. الترتيب لا يُفترض: الأعمدة تُتعرف بالاسم.</p>' +
+    tableHtml(['#', 'العمود', 'المعنى'], info.cells.map((c, i) => [
+      String(i + 1),
+      String(c || '—'),
+      i === info.map.timestamp ? 'الطابع الزمني (Timestamp)'
+        : i === info.map.supervisor ? 'اسم المشرف (مفتاح المطابقة)'
+        : i === info.map.notes ? 'الملاحظات'
+        : i === info.map.code ? 'الكود'
+        : i === info.map.type ? 'نوع البرنامج'
+        : (info.map.days.find((d) => d.school === i) ? 'يوم (مدرسة)'
+          : info.map.days.find((d) => d.activity === i) ? 'يوم (تفاصيل)' : ''),
+    ])) +
+    '<p>المصدر الحالي: <b>' + originLabel + '</b> · الترويسة سليمة: <b>' + (info.map.ok ? '✅' : '⚠') +
+      '</b> · النسخة المحفوظة: <b>' + (snap ? '✅ ' + snap.length + ' عموداً' : 'لا توجد') + '</b></p>' +
+    '<div class="btn-row">' +
+      '<button class="btn btn-primary" id="set-hdr-save">💾 حفظ نسخة Header من الملف الحي</button>' +
+      '<button class="btn" id="set-hdr-default">↩ حفظ نسخة افتراضية (استعادة)</button>' +
+      '<button class="btn btn-ghost" id="set-hdr-clear">مسح النسخة المحفوظة</button>' +
+    '</div>';
 }
 
 export function render(root, app) {
@@ -42,13 +69,16 @@ export function render(root, app) {
       '<p class="muted">المتغيرات المتاحة: {المشرف} {الاسبوع} {النوع}</p>') +
 
     card('📱 أرقام الهواتف',
-      '<p class="muted">لا توجد أعمدة هواتف في مصادر البيانات الحالية. استورد ملف CSV بأعمدة: <code>اسم المشرف, رقم الهوية, رقم الهاتف</code> لتفعيل إدراج الأرقام تلقائياً في التنبيهات.</p>' +
+      '<p class="muted">البحث والمطابقة بالاسم فقط. استورد ملف CSV بأعمدة: <code>اسم المشرف, رقم الهاتف</code> (أو أضف عمود الهوية) لتفعيل إدراج الأرقام تلقائياً في التنبيهات. لاحظ: عمود <code>id</code> في الملف المرجعي هو رقم الهاتف ولا يُستخدم في المطابقة.</p>' +
       '<div class="btn-row">' +
         '<label class="btn btn-primary file-btn">📂 استيراد CSV هواتف<input type="file" id="set-phones-file" accept=".csv,text/csv" hidden></label>' +
         '<button class="btn" id="set-phones-tpl">⬇ تنزيل قالب الهواتف</button>' +
         '<button class="btn btn-ghost" id="set-phones-clear">مسح القائمة</button>' +
       '</div>' +
       '<p>الأرقام المحفوظة: <b>' + phoneCount + '</b></p>') +
+
+    card('🧾 ترويسة ملف الردود (Header)',
+      headerCardHtml(app)) +
 
     card('🔐 الصلاحيات',
       (s.pin
@@ -71,7 +101,7 @@ export function render(root, app) {
         '<p>الحالة: <b>' + (app.data && app.data.offline ? '⚠ بيانات محفوظة (بلا اتصال)' : 'متصل') + '</b></p></div>' +
         '<div><p>المصادر:</p><ul class="src-list">' +
           Object.entries((app.data && app.data.sources) || {}).map(([k, v]) =>
-            '<li>' + k + ': ' + (v.ok ? '✅' : '❌ ' + escapeHtml(v.error || '')) + '</li>').join('') +
+            '<li>' + (CFG.sourceLabels[k] || k) + ': ' + (v.ok ? '✅' : '❌ ' + escapeHtml(v.error || '')) + '</li>').join('') +
           (app.data && app.data.ts ? '' : '<li>لا كاش</li>') +
         '</ul></div>' +
       '</div>' +
@@ -144,9 +174,9 @@ export function render(root, app) {
   });
 
   root.querySelector('#set-phones-tpl').addEventListener('click', () => {
-    const rows = [['اسم المشرف', 'رقم الهوية', 'رقم الهاتف']];
-    for (const sup of (app.data.master || [])) rows.push([sup.name, sup.id, app.phones[sup.id] || app.phones[sup.nameNorm] || '']);
-    downloadBlob('phones-template.csv', new Blob(['\uFEFF' + csvSerialize(rows)], { type: 'text/csv;charset=utf-8' }));
+    const rows = [['اسم المشرف', 'رقم الهاتف']];
+    for (const sup of (app.data.master || [])) rows.push([sup.name, app.phones[sup.phone] || app.phones[sup.nameNorm] || sup.phone || '']);
+    downloadBlob('phones-template.csv', new Blob(['﻿' + csvSerialize(rows)], { type: 'text/csv;charset=utf-8' }));
   });
 
   root.querySelector('#set-phones-clear').addEventListener('click', () => {
@@ -157,6 +187,33 @@ export function render(root, app) {
       toast('تم المسح', 'ok');
       return true;
     });
+  });
+
+  /* ترويسة Header */
+  const hdrSave = root.querySelector('#set-hdr-save');
+  if (hdrSave) hdrSave.addEventListener('click', () => {
+    if (!guardAdmin('حفظ نسخة Header')) return;
+    const live = app.data && app.data.programs && app.data.programs.header;
+    if (!live || !live.length) { toast('لا توجد ترويسة حية في بيانات الردود', 'error'); return; }
+    saveHeaderSnapshot(live);
+    logAdd('تحديث الإعدادات', 'حفظ نسخة Header (' + live.length + ' عموداً)');
+    render(root, app);
+    toast('تم حفظ نسخة Header', 'ok');
+  });
+  const hdrDef = root.querySelector('#set-hdr-default');
+  if (hdrDef) hdrDef.addEventListener('click', () => {
+    if (!guardAdmin('استعادة Header')) return;
+    saveHeaderSnapshot(defaultHeaderRow(''));
+    logAdd('تحديث الإعدادات', 'حفظ نسخة Header افتراضية');
+    render(root, app);
+    toast('تم حفظ النسخة الافتراضية (استعادة)', 'ok');
+  });
+  const hdrClear = root.querySelector('#set-hdr-clear');
+  if (hdrClear) hdrClear.addEventListener('click', () => {
+    if (!guardAdmin('مسح نسخة Header')) return;
+    clearHeaderSnapshot();
+    render(root, app);
+    toast('تم مسح النسخة المحفوظة', 'ok');
   });
 
   /* صلاحيات */

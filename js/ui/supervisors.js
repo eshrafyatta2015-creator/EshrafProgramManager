@@ -21,7 +21,6 @@ function card(r) {
     '<div class="sup-top">' +
       '<label class="sup-check" title="اختيار للتنبيه"><input type="checkbox" data-norm="' + escapeHtml(r.nameNorm) + '"' + checked + '> <span>تنبيه</span></label>' +
       '<div class="sup-name">' + escapeHtml(r.name) +
-        (r.id ? '<span class="sup-id">#' + escapeHtml(r.id) + '</span>' : '') +
         (r.phone ? '<span class="sup-phone">📱 ' + escapeHtml(r.phone) + '</span>' : '<span class="sup-phone muted">📱 غير متوفر</span>') +
       '</div>' +
       statusPill(r.status) +
@@ -50,7 +49,7 @@ export function render(root, app) {
 
   root.innerHTML =
     '<div class="toolbar">' +
-      '<div class="search-box"><span>🔍</span><input id="sup-search" type="search" placeholder="البحث عن مشرف (اسم أو رقم هوية)" value="' + escapeHtml(f.query) + '"></div>' +
+      '<div class="search-box"><span>🔍</span><input id="sup-search" type="search" placeholder="البحث عن مشرف (بالاسم فقط)" value="' + escapeHtml(f.query) + '"></div>' +
       '<div class="chips">' + CFG.statusFilters.map((x) =>
         '<button class="chip ' + (f.filter === x.key ? 'active' : '') + '" data-filter="' + x.key + '">' + x.label + '</button>').join('') +
       '</div>' +

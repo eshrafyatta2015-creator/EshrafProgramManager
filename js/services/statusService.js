@@ -1,4 +1,5 @@
-/* StatusService — من أرسل التخطيط/الفعلي لكل أسبوع */
+/* StatusService — من أرسل التخطيط/الفعلي لكل أسبوع
+   Supervisor matching key = Supervisor Name (id/phone لا تُستخدم للمطابقة) */
 
 import { CFG } from '../config.js';
 import { normName, formatDate, parseTimestamp } from '../utils.js';
@@ -37,8 +38,7 @@ export function computeStatus(master, records, week, phones) {
     return {
       name: sup.name,
       nameNorm: sup.nameNorm,
-      id: sup.id || '',
-      phone: phoneMap[sup.nameNorm] || phoneMap[sup.id] || '',
+      phone: phoneMap[sup.nameNorm] || phoneMap[sup.phone] || sup.phone || '',
       sentPlanning,
       sentActual,
       status: st,
@@ -77,7 +77,8 @@ export function filterRows(rows, { filter = 'all', query = '' } = {}) {
   else if (filter === 'none') out = out.filter((r) => !r.sentPlanning && !r.sentActual);
   else if (filter === 'sentAny') out = out.filter((r) => r.sentPlanning || r.sentActual);
 
+  /* البحث بالاسم فقط — رقم الهاتف/الهوية لا يُستخدم في المطابقة (§مفتاح الاسم) */
   const q = normName(query);
-  if (q) out = out.filter((r) => r.nameNorm.includes(q) || (r.id && r.id.includes(query.trim())));
+  if (q) out = out.filter((r) => r.nameNorm.includes(q));
   return out;
 }

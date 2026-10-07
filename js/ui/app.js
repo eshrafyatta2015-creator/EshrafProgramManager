@@ -8,6 +8,7 @@ import { logAdd } from '../services/logService.js';
 import { $, $$, toast, setLoading, showModal, confirmModal } from './components.js';
 import * as dashboard from './dashboard.js';
 import * as supervisors from './supervisors.js';
+import * as compare from './compare.js';
 import * as details from './details.js';
 import * as sms from './sms.js';
 import * as migrate from './migrate.js';
@@ -39,6 +40,7 @@ export const App = {
 const TABS = {
   dashboard,
   supervisors,
+  compare,
   details,
   sms,
   migrate,

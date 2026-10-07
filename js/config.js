@@ -47,11 +47,12 @@ export const CFG = {
   magicHeader: '(اخترمن القائمة)اسم المشرف',
   noteRowPrefix: 'الدوام',
 
+  /* §7 تسميات الحالات النهائية (تُستخدم في البطاقات والجداول والتصدير) */
   statuses: {
-    both: { key: 'both', icon: '🟢', label: 'تم الإرسال', cls: 'st-both' },
-    planning: { key: 'planning', icon: '🟠', label: 'أرسل التخطيط فقط', cls: 'st-planning' },
-    actual: { key: 'actual', icon: '🔵', label: 'تم إرسال الفعلي', cls: 'st-actual' },
-    none: { key: 'none', icon: '🔴', label: 'لم يرسل', cls: 'st-none' },
+    both: { key: 'both', icon: '🟢', label: 'مكتمل', cls: 'st-both' },
+    planning: { key: 'planning', icon: '🟠', label: 'أرسل التخطيط ولم يرسل الفعلي', cls: 'st-planning' },
+    actual: { key: 'actual', icon: '🟢', label: 'أرسل الفعلي', cls: 'st-actual' },
+    none: { key: 'none', icon: '🔴', label: 'لم يرسل البرنامج', cls: 'st-none' },
   },
   statusFilters: [
     { key: 'all', label: 'الجميع' },
@@ -77,6 +78,28 @@ export const CFG = {
     log: 'epm.log.v1',
     phones: 'epm.phones.v1',
     role: 'epm.role.v1',
+    migrations: 'epm.migrations.v1',
+    header: 'epm.header.v1',
+  },
+
+  /* أسماء المصادر الثلاثة للعرض في الإعدادات */
+  sourceLabels: {
+    lists: 'البيانات الأساسية (مرجعي)',
+    programs: 'ردود الاستمارة (حيّة)',
+    admin: 'الأرشيف النهائي',
+  },
+
+  /* نصوص موحّدة (§6/§17/§29/§38) — تُستخدم في الواجهة والاختبارات */
+  texts: {
+    matchRule: 'Supervisor matching key = Supervisor Name',
+    orphanWarning: '⚠ يوجد مشرف في ملف الردود غير موجود في البيانات الأساسية',
+    orphanReview: 'يتطلب مراجعة إدارية',
+    failKeepResponses: '❌ فشل الترحيل، تم الاحتفاظ ببيانات الردود ولم يتم حذفها.',
+    incompleteKeepResponses: '⚠ لم تكتمل عملية الترحيل. تم الاحتفاظ ببيانات الردود لحمايتها.',
+    alreadyMigrated: '⚠ تم ترحيل هذا الأسبوع مسابقاً',
+    nextWeekReady: 'تم إعداد الأسبوع التالي',
+    confirmMigrate: 'تأكيد الترحيل والحذف',
+    cancel: 'إلغاء',
   },
 
   logMax: 500,

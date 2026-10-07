@@ -10,9 +10,9 @@ const [listsTxt, adminTxt, programsTxt] = await Promise.all([
 ]);
 
 const lists = parseListsCsv(listsTxt);
-console.log('LISTS: schools=%d activities=%d supervisors=%d withID=%d',
+console.log('LISTS: schools=%d activities=%d supervisors=%d withPhone=%d',
   lists.schools.length, lists.activities.length, lists.supervisors.length,
-  lists.supervisors.filter((s) => s.id).length);
+  lists.supervisors.filter((s) => s.phone).length);
 
 const admin = parseAdminCsv(adminTxt);
 console.log('ADMIN: weeks=%d records=%d skipped=%j', admin.weeks.length, admin.records.length, admin.skipped);
@@ -26,7 +26,7 @@ console.log('PROGRAMS: headerWeek=%s records=%d types=%j',
 
 const master = masterFromLists(lists);
 const union = buildMasterSupervisors(lists, admin.records, programs.records);
-console.log('MASTER (reference-only):', master.length, '| with ID:', master.filter((s) => s.id).length);
+console.log('MASTER (reference-only):', master.length, '| with phone:', master.filter((s) => s.phone).length);
 console.log('UNION (legacy, lists+archive+responses):', union.length);
 
 const weeks = allWeeks(admin.weeks, programs.headerWeek, programs.records);

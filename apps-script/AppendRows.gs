@@ -1,6 +1,12 @@
 /**
- * EshrafProgramManager — AppendRows.gs
- * كتابة الصفوف الجديدة في جدول الأرشيف مع منع التكرار (قسم الأسبوع فقط).
+ * EshrafProgramManager — AppendRows.gs (v2)
+ * مسار الكتابة الوحيد للتطبيق:
+ *   1) action 'append'      → إضافة صفوف بتنسيق ردود الاستمارة إلى الأرشيف النهائي
+ *                             (ترويسة واحدة أعلى الملف فقط إذا كان فارغاً — لا ترويسة لكل أسبوع،
+ *                             ومنع تكرار بمفتاح: الأسبوع + اسم المشرف + النوع + الأيام).
+ *   2) action 'deleteRows'  → حذف صفوف محددة تحديداً من ملف الردود — لا يُستدعى إلا بعد
+ *                             تحقق التطبيق من وصول الصفوف للأرشيف. لا يُحذف صف 1 (الترويسة)
+ *                             ولا أي صف غير مدرَج في القائمة.
  *
  * طريقة النشر:
  * 1) افتح جدول الأرشيف: https://docs.google.com/spreadsheets/d/1rthlmaZES8c95kUI6ErfD4YgiymWq4RoKXNXqgoBPnI/edit
@@ -11,77 +17,214 @@
  *    - Who has access: Anyone
  * 5) انسخ رابط الويب أب (.../exec) والصقه في: الإعدادات ← ربط الخدمات
  *
- * ملاحظة: لا تضع هذا الرابط داخل أي ملف في GitHub إن كان يُعد حساساً —
- * يُحفظ محلياً في المتصفح فقط، ولا يحتوي مفاتيح.
+ * ملاحظة: الرابط يُحفظ محلياً في المتصفح فقط، ولا يحتوي مفاتيح — لا تضعه داخل المستودع.
  */
 
 var ADMIN_SHEET_ID = '1rthlmaZES8c95kUI6ErfD4YgiymWq4RoKXNXqgoBPnI';
+var RESPONSES_SHEET_ID = '16Sw_4TjAM0fhYKicxyZE0EzGoT98ZnlMSxYKxU3ILLk';
 var MAGIC_HEADER = '(اخترمن القائمة)اسم المشرف';
+var TS_RE = /^\d{1,2}\/\d{1,2}\/\d{4}/;
+var WEEK_RE = /\d{1,2}\/\d{1,2}\s*-\s*\d{1,2}\/\d{1,2}/;
 
 function doPost(e) {
   try {
     var payload = JSON.parse(e.postData.contents);
-    if (payload.action !== 'append') {
-      return json_({ ok: false, error: 'action غير مدعوم' });
-    }
-    var rows = payload.rows || [];
-    if (!rows.length) return json_({ ok: true, appended: 0, skipped: 0 });
-
-    var ss = SpreadsheetApp.openById(payload.sheetId || ADMIN_SHEET_ID);
-    var sh = ss.getSheets()[0];
-    var lastRow = sh.getLastRow();
-    var lastCol = Math.max(sh.getLastColumn(), 16);
-    var all = lastRow > 0 ? sh.getRange(1, 1, lastRow, lastCol).getValues() : [];
-
-    // حدود قسم الأسبوع المحدد (آخر صف رأس يحتوي اسم الأسبوع في العمود B)
-    var weekLabel = String(payload.weekLabel || '');
-    var sectionStart = -1;
-    if (weekLabel) {
-      for (var i = all.length - 1; i >= 0; i--) {
-        var b = String(all[i][1] || '');
-        var a = String(all[i][0] || '');
-        if (b.indexOf(weekLabel) !== -1 && a === MAGIC_HEADER) {
-          sectionStart = i + 1; // أول صف بيانات بعد الرأس (1-based)
-          break;
-        }
-      }
-    }
-
-    var seen = {};
-    if (sectionStart > 0) {
-      for (var j = sectionStart; j < all.length; j++) {
-        seen[rowKey_(all[j])] = true;
-      }
-    }
-
-    var toAppend = [];
-    var skipped = 0;
-    for (var k = 0; k < rows.length; k++) {
-      var key = rowKey_(rows[k]);
-      if (seen[key]) { skipped++; continue; }
-      seen[key] = true;
-      toAppend.push(rows[k]);
-    }
-
-    if (toAppend.length) {
-      sh.getRange(lastRow + 1, 1, toAppend.length, toAppend[0].length).setValues(toAppend);
-    }
-
-    return json_({ ok: true, appended: toAppend.length, skipped: skipped, section: weekLabel || '(كل الورقة)' });
+    if (payload.action === 'append') return append_(payload);
+    if (payload.action === 'deleteRows') return deleteRows_(payload);
+    return json_({ ok: false, error: 'action غير مدعوم' });
   } catch (err) {
     return json_({ ok: false, error: String(err) });
   }
 }
 
-/** مفتاح السجل: المشرف + المدرسة/الفعالية لستة الأيام + النوع */
-function rowKey_(row) {
-  var cells = [];
-  for (var i = 0; i < row.length; i++) cells.push(String(row[i] == null ? '' : row[i]).trim());
-  var type = cells.length >= 16 ? cells[15] : (cells.length >= 15 ? cells[14] : '');
-  var parts = [cells[0]];
-  for (var d = 1; d <= 12 && d < cells.length; d++) parts.push(cells[d]);
-  parts.push(type);
-  return parts.join('|');
+/* ---------------- الإضافة إلى الأرشيف ---------------- */
+
+function append_(payload) {
+  var rows = payload.rows || [];
+  var ss = SpreadsheetApp.openById(payload.sheetId || ADMIN_SHEET_ID);
+  var sh = ss.getSheets()[0];
+
+  var lastRow = sh.getLastRow();
+  var headerWritten = false;
+  /* ترويسة واحدة أعلى الملف — تُكتب فقط إذا كان الملف فارغاً كلياً (§13/§26) */
+  if (lastRow === 0 && payload.headerRow && payload.headerRow.length) {
+    sh.getRange(1, 1, 1, payload.headerRow.length).setValues([payload.headerRow]);
+    headerWritten = true;
+    lastRow = 1;
+  }
+
+  if (!rows.length) return json_({ ok: true, appended: 0, skipped: 0, headerWritten: headerWritten });
+
+  var lastCol = Math.max(sh.getLastColumn(), 17);
+  var all = lastRow > 0 ? sh.getRange(1, 1, lastRow, lastCol).getValues() : [];
+  var seen = seenKeys_(all);
+
+  var toAppend = [];
+  var skipped = 0;
+  for (var k = 0; k < rows.length; k++) {
+    var key = rowKey_(cells_(rows[k]), '');
+    if (!key) continue;
+    if (seen[key]) { skipped++; continue; }
+    seen[key] = true;
+    toAppend.push(rows[k]);
+  }
+
+  if (toAppend.length) {
+    var startRow = sh.getLastRow() + 1;
+    sh.getRange(startRow, 1, toAppend.length, toAppend[0].length).setValues(toAppend);
+  }
+
+  return json_({ ok: true, appended: toAppend.length, skipped: skipped, headerWritten: headerWritten });
+}
+
+/* مفاتيح كل صفوف الورقة الحالية — يتتبع أسبوع كل قسم من رؤوس الأقسام القديمة */
+function seenKeys_(all) {
+  var seen = {};
+  var week = '';
+  for (var i = 0; i < all.length; i++) {
+    var cells = cells_(all[i]);
+    var a = cells[0];
+    if (!a && !cells[1]) continue;
+    var na = norm_(a);
+    if (a === MAGIC_HEADER || na === 'اسم المشرف') {
+      var w0 = weekStartOfLabel_(cells[1]);
+      if (w0) week = w0;
+      continue;
+    }
+    if (na.toLowerCase() === 'timestamp') continue;
+    if (WEEK_RE.test(a)) {
+      var w1 = weekStartOfLabel_(a);
+      if (w1) week = w1;
+      continue;
+    }
+    var key = rowKey_(cells, week);
+    if (key) seen[key] = true;
+  }
+  return seen;
+}
+
+/* مفتاح السجل: الأسبوع + اسم المشرف (موحّد للمقارنة) + النوع + محتوى الأيام
+   يدعم الصيغتين: ردود الاستمارة (timestamp أولاً) والأرشيف القديم (الاسم أولاً). */
+function rowKey_(cells, week) {
+  var w = week || '';
+  var name = '';
+  var type = '';
+  var days = [];
+  var d;
+  if (TS_RE.test(cells[0])) {
+    w = weekStartOfDate_(cells[0]) || w;
+    name = norm_(cells[1] || '');
+    type = isType_(cells[16]) ? cells[16] : '';
+    for (d = 2; d <= 13 && d < cells.length; d++) days.push(cells[d]);
+  } else {
+    name = norm_(cells[0] || '');
+    if (cells.length >= 16 && isType_(cells[15])) type = cells[15];
+    else if (cells.length >= 15 && isType_(cells[14])) type = cells[14];
+    for (d = 1; d <= 12 && d < cells.length; d++) days.push(cells[d]);
+  }
+  if (!name) return '';
+  return [w, name, type, days.join('~')].join('|');
+}
+
+function isType_(v) {
+  var t = String(v == null ? '' : v).trim();
+  return t === 'تخطيط' || t === 'فعلي';
+}
+
+function cells_(row) {
+  var out = [];
+  for (var i = 0; i < row.length; i++) out.push(String(row[i] == null ? '' : row[i]).trim());
+  return out;
+}
+
+/* تطبيع الاسم للمقارنة فقط (كما في التطبيق) */
+function norm_(s) {
+  return String(s == null ? '' : s)
+    .replace(/\u0640/g, '')
+    .replace(/[\u064B-\u065F\u0670]/g, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function iso_(d) {
+  var m = d.getMonth() + 1;
+  var day = d.getDate();
+  return d.getFullYear() + '-' + (m < 10 ? '0' : '') + m + '-' + (day < 10 ? '0' : '') + day;
+}
+
+/* بداية الأسبوع (أحد) من طابع زمني dd/mm/yyyy */
+function weekStartOfDate_(ts) {
+  var m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(String(ts || '').trim());
+  if (!m) return '';
+  var d = new Date(+m[3], +m[2] - 1, +m[1]);
+  d.setDate(d.getDate() - d.getDay());
+  return iso_(d);
+}
+
+/* بداية الأسبوع من تسمية 4/10-10/10 (نفس منطق التطبيق: سنة حالية إن كانت الأحد) */
+function weekStartOfLabel_(label) {
+  var m = /(\d{1,2})\/(\d{1,2})\s*-\s*(\d{1,2})\/(\d{1,2})/.exec(String(label || ''));
+  if (!m) return '';
+  var nowYear = new Date().getFullYear();
+  var years = [nowYear, nowYear - 1, nowYear + 1];
+  var start = null;
+  for (var i = 0; i < years.length; i++) {
+    var cand = new Date(years[i], +m[2] - 1, +m[1]);
+    if (cand.getFullYear() === years[i] && cand.getMonth() === +m[2] - 1 &&
+        cand.getDate() === +m[1] && cand.getDay() === 0) {
+      start = cand;
+      break;
+    }
+  }
+  if (!start) start = new Date(nowYear, +m[2] - 1, +m[1]);
+  return iso_(start);
+}
+
+/* ---------------- الحذف من ملف الردود (بعد التحقق فقط) ---------------- */
+
+function deleteRows_(payload) {
+  var targets = payload.rows || [];
+  var expected = targets.length;
+  if (!expected) return json_({ ok: true, deleted: 0, expected: 0 });
+
+  var ss = SpreadsheetApp.openById(payload.sheetId || RESPONSES_SHEET_ID);
+  var sh = ss.getSheets()[0];
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return json_({ ok: true, deleted: 0, expected: expected });
+
+  var lastCol = Math.max(sh.getLastColumn(), 17);
+  var all = sh.getRange(1, 1, lastRow, lastCol).getValues();
+
+  var want = {};
+  for (var i = 0; i < targets.length; i++) {
+    var key = String(targets[i].t == null ? '' : targets[i].t).trim() + '\u0001' + norm_(targets[i].s);
+    want[key] = (want[key] || 0) + 1;
+  }
+
+  var rowNumbers = [];
+  /* نبدأ من الصف 2 — صف 1 (الترويسة) لا يُحذف أبداً، ولا أي صف غير مطابق للمواصفة */
+  for (var r = 1; r < all.length; r++) {
+    var c0 = String(all[r][0] == null ? '' : all[r][0]).trim();
+    var c1 = String(all[r][1] == null ? '' : all[r][1]).trim();
+    if (!c0 || !c1) continue;
+    if (c0.toLowerCase() === 'timestamp' || c0 === MAGIC_HEADER) continue;
+    var k2 = c0 + '\u0001' + norm_(c1);
+    if (want[k2] > 0) {
+      rowNumbers.push(r + 1);
+      want[k2]--;
+    }
+  }
+
+  /* حذف من الأسفل إلى الأعلى حتى تبقى ترقيم الصفوف صحيحاً */
+  var deleted = 0;
+  for (var j = rowNumbers.length - 1; j >= 0; j--) {
+    sh.deleteRow(rowNumbers[j]);
+    deleted++;
+  }
+
+  return json_({ ok: true, deleted: deleted, expected: expected });
 }
 
 function json_(obj) {
@@ -89,5 +232,5 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, service: 'EshrafProgramManager AppendRows', hint: 'استخدم POST' });
+  return json_({ ok: true, service: 'EshrafProgramManager AppendRows v2', hint: 'استخدم POST: append | deleteRows' });
 }

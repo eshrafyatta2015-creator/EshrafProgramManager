@@ -23,8 +23,8 @@ export function templateFor(type) {
 export const STATE_TEMPLATES = [
   { key: 'auto', label: '📡 حسب حالة المحددين (تلقائي)' },
   { key: 'none', label: '🔴 لم يرسلوا أي برنامج' },
-  { key: 'planning', label: '🟠 أرسلوا التخطيط فقط' },
-  { key: 'actual', label: '🔵 أرسلوا الفعلي فقط' },
+  { key: 'planning', label: '🟠 أرسلوا التخطيط ولم يرسلوا الفعلي' },
+  { key: 'actual', label: '🟢 أرسلوا الفعلي' },
   { key: 'complete', label: '🟢 مكتمل (أرسلوا الاثنين)' },
   { key: 'both', label: '⚪ التخطيطي/الفعلي (رسالة عامة)' },
 ];
@@ -56,8 +56,7 @@ export function resolveRecipients(selectedRows, phones) {
   const entries = selectedRows.map((r) => ({
     name: r.name,
     nameNorm: r.nameNorm,
-    id: r.id || '',
-    phone: r.phone || map[r.nameNorm] || map[r.id] || '',
+    phone: r.phone || map[r.nameNorm] || '',
   }));
   return {
     entries,

@@ -190,7 +190,9 @@ code { background: #eef2f8; padding: 1px 6px; border-radius: 6px; font-size: .85
   padding: 18px;
   margin-bottom: 16px;
 }
-.card h3 { margin: 0 0 12px; font-size: 16.5px; color: var(--navy); }
+.card h3 { margin: 0 0 12px; font-size: 16.5px; color: var(--navy); text-align: center; }
+.orph-opt { display: block; margin-top: 8px; font-weight: 600; }
+.orph-opt input { margin-inline-end: 6px; }
 .card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
 .card-head h3 { margin: 0; }
 .card-actions { margin-top: 12px; }
