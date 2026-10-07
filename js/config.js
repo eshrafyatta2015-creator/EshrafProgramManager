@@ -101,19 +101,37 @@ export const CFG = {
     nextWeekReady: 'تم إعداد الأسبوع التالي',
     confirmMigrate: 'تأكيد الترحيل والحذف',
     cancel: 'إلغاء',
-    /* §5 تأكيد إرسال SMS (نص المواصفة حرفياً) */
-    smsConfirmTitle: 'تأكيد الإرسال',
-    smsConfirmLine: (n) => 'سيتم إرسال الرسالة إلى عدد (' + n + ') من المشرفين.',
-    smsAsk: 'هل تريد المتابعة؟',
-    smsConfirmAction: 'تأكيد الإرسال',
+    /* §2/§5 تأكيد الإرسال المباشر — نصوص حرفية من المواصفة */
+    smsConfirmTitle: 'تأكيد إرسال الرسائل',
+    smsConfirmLine: (n) => 'سيتم إرسال الرسالة إلى ' + n + ' مشرفين.',
+    smsAsk: 'هل تريد إرسال الرسالة الآن؟',
+    smsConfirmAction: 'تأكيد وإرسال',
     smsSelectOne: 'يرجى اختيار مشرف واحد على الأقل قبل الإرسال.',
     smsNoValidPhone: 'لا يوجد رقم جوال صالح بين المشرفين المحددين.',
+    smsNoPhoneLine: (name) => name + ' — لا يوجد رقم جوال صالح',
     smsSending: 'جاري إرسال الرسائل...',
     smsProgress: (done, total) => 'تم إرسال ' + done + ' من ' + total,
-    smsDoneTitle: 'تم إرسال الرسائل بنجاح',
+    /* §6 نتيجة الإرسال */
+    smsResultTotal: 'إجمالي الرسائل',
+    smsResultSent: 'تم الإرسال بنجاح',
+    smsResultFailed: 'فشل الإرسال',
+    smsDoneTitle: 'تم إرسال جميع الرسائل',
     smsPartialTitle: 'تم الإرسال مع أخطاء',
     smsFailLine: (name, reason) => name + ' — فشل الإرسال — ' + reason,
+    smsFailSentence: (name, reason) => 'تعذر إرسال الرسالة إلى ' + name + ' بسبب ' + reason + '.',
+    smsProviderNotice: 'تم إرسال الطلب إلى مزود الرسائل (بلا تأكيد تسليم إلا إن أفاد المزوّد بذلك).',
+    smsRetryFailed: 'إعادة إرسال الرسائل الفاشلة',
     smsBusy: 'جاري الإرسال حاليًا — انتظر انتهاء العملية.',
+    /* §9/§10 عدّاد الاختيار والرسالة */
+    smsChosen: (n) => 'تم اختيار ' + n + ' مشرفين',
+    smsChars: (n) => 'عدد الأحرف: ' + n,
+    smsParts: (n) => 'عدد الرسائل المتوقعة: ' + n,
+    /* §15 أخطاء البوابة بلغة مفهومة (لا Stack Trace) */
+    smsGatewayDown: 'خادم الإرسال غير متاح — شغّل node serve.mjs أو اضبط رابط بوابة SMS في الإعدادات.',
+    smsGatewayNotConfigured: 'لم يتم تهيئة مزود SMS على الخادم (SMS_UPSTREAM_URL).',
+    smsUpstreamDown: 'تعذر الوصول إلى مزود الرسائل — تحقق من الاتصال.',
+    /* §11 حالات السجل */
+    smsStatus: { SENT: 'تم الإرسال', PENDING: 'تم الطلب', DELIVERED: 'تم التسليم', FAILED: 'فشل' },
     /* §6-§10 التراجع عن الترحيل */
     undoButton: '↩ التراجع عن آخر ترحيل',
     undoConfirmTitle: 'التراجع عن عملية الترحيل',

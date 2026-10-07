@@ -50,19 +50,32 @@ export function logClear() {
   return [];
 }
 
-/* ---------- سجل إرسال الرسائل (§4) ----------
-   اسم المشرف · الهاتف · تاريخ ووقت الإرسال · نص الرسالة · الحالة · رسالة الخطأ */
+/* ---------- سجل إرسال الرسائل (§11) ----------
+   التاريخ والوقت · المستخدم · اسم المشرف · هاتف مموّه (آمن) · نص الرسالة/معرفها ·
+   الحالة (SENT/FAILED/PENDING) · Message ID من المزوّد · سبب الفشل */
+export function maskPhone(p) {
+  const d = String(p == null ? '' : p).replace(/[^\d+]/g, '');
+  if (!d) return '';
+  if (d.length <= 5) return d;
+  return d.slice(0, 4) + '*'.repeat(Math.max(2, d.length - 6)) + d.slice(-2);
+}
+
 export function smsLogAdd(entry) {
   const logs = storeGet(CFG.storage.smsLog, []);
+  const statusCode = entry.status || (entry.ok ? 'SENT' : 'FAILED');
+  const labels = CFG.texts.smsStatus || { SENT: 'تم الإرسال', FAILED: 'فشل', PENDING: 'تم الطلب', DELIVERED: 'تم التسليم' };
   logs.unshift({
     id: uid(),
     time: formatDateTime(new Date()),
     ts: Date.now(),
     name: String(entry.name == null ? '' : entry.name),
-    phone: String(entry.phone == null ? '' : entry.phone),
-    body: String(entry.body == null ? '' : entry.body),
-    status: entry.ok ? 'تم الإرسال' : 'فشل',
-    ok: !!entry.ok,
+    phone: maskPhone(entry.phone),
+    body: String(entry.body == null ? '' : entry.body).slice(0, 300),
+    status: labels[statusCode] || String(statusCode),
+    statusCode: String(statusCode),
+    ok: statusCode !== 'FAILED',
+    messageId: String(entry.messageId == null ? '' : entry.messageId),
+    user: String(entry.user == null ? '' : entry.user),
     provider: String(entry.provider == null ? '' : entry.provider),
     error: String(entry.error == null ? '' : entry.error),
   });

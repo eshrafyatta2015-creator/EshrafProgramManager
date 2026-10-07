@@ -49,9 +49,10 @@ export function render(root, app) {
         '<label class="field"><span>رابط Google Apps Script (ويب أب) للكتابة في الأرشيف</span>' +
           '<input type="url" id="set-script" placeholder="https://script.google.com/macros/s/…/exec" value="' + escapeHtml(s.appsScriptUrl || '') + '">' +
           '<small>انشر الملف <code>apps-script/AppendRows.gs</code> كتطبيق ويب ثم الصق الرابط. بدونه تبقى القراءة تعمل والكتابة معطّلة.</small></label>' +
-        '<label class="field"><span>رابط مزوّد SMS عبر API (اختياري)</span>' +
-          '<input type="url" id="set-smsapi" placeholder="https://provider.example/api/send" value="' + escapeHtml(s.smsApiUrl || '') + '">' +
-          '<small>يُستقبل POST بصيغة {to:[…], body}. إن لم يُضبط، استخدم فتح تطبيق الرسائل/واتساب.</small></label>' +
+        '<label class="field"><span>بوابة الإرسال المباشر (Server-side — POST JSON)</span>' +
+          '<input type="text" id="set-smsapi" placeholder="/api/sms/send" value="' + escapeHtml(s.smsGatewayUrl || s.smsApiUrl || '/api/sms/send') + '">' +
+          '<small>مسار بوابة SMS على الخادم (الافتراضي <code>/api/sms/send</code>). بيانات المزوّد (SMS_UPSTREAM_URL و Token/Key) تُضبط في بيئة الخادم فقط — <b>لا تضعها هنا ولا في المستودع</b>.</small>' +
+          '<div class="btn-row"><button type="button" class="btn btn-sm btn-ghost" id="set-smsapi-test">🔍 فحص البوابة</button></div></label>' +
       '</div>' +
       '<div class="btn-row"><button class="btn btn-primary" id="set-save-conn">💾 حفظ الربط</button></div>' +
       '<p class="muted">لا تضع مفاتيح أو أسرار داخل المستودع — روابط الويب أب تُحفظ محلياً في هذا المتصفح فقط.</p>',
@@ -123,10 +124,25 @@ export function render(root, app) {
     if (!guardAdmin('تعديل الربط')) return;
     saveSettings({
       appsScriptUrl: root.querySelector('#set-script').value.trim(),
-      smsApiUrl: root.querySelector('#set-smsapi').value.trim(),
+      smsGatewayUrl: root.querySelector('#set-smsapi').value.trim() || '/api/sms/send',
     });
     logAdd('تحديث الإعدادات', 'حفظ روابط الربط');
     toast('تم حفظ إعدادات الربط', 'ok');
+  });
+
+  /* فحص بوابة الإرسال المباشر */
+  const gwTest = root.querySelector('#set-smsapi-test');
+  if (gwTest) gwTest.addEventListener('click', async () => {
+    const url = (root.querySelector('#set-smsapi').value.trim() || '/api/sms/send').replace(/\/send$/, '/health');
+    try {
+      const r = await fetch(url, { headers: { Accept: 'application/json' } });
+      const d = await r.json().catch(() => null);
+      if (r.ok && d && d.configured) toast('البوابة متاحة والمزوّد مُهيّأ على الخادم ✅', 'ok');
+      else if (r.ok && d && d.configured === false) toast('البوابة تعمل لكن مزوّد SMS غير مُهيّأ على الخادم (SMS_UPSTREAM_URL).', 'warn');
+      else toast('استجابة غير متوقعة من البوابة (HTTP ' + r.status + ')', 'error');
+    } catch (e) {
+      toast(CFG.texts.smsGatewayDown, 'error');
+    }
   });
 
   /* رسائل */

@@ -29,6 +29,7 @@ const HS = await import('../js/services/headerService.js');
 const WK = await import('../js/services/weekService.js');
 const DS = await import('../js/services/duplicateService.js');
 const RS = await import('../js/services/responsesService.js');
+const GW = await import('../server/smsGateway.mjs');
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra) => {
@@ -685,12 +686,15 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
       ],
       settings: { smsApiUrl: 'https://provider.example/api' },
       delayMs: 0,
+      idempotencyKey: 'op44',
       onProgress: (p) => progress.push(p),
     });
-    ok('44. مجموعة SMS: فشل الرقم غير الصالح + تقدّم بعد كل رسالة',
+    ok('44. مجموعة SMS: فشل الرقم غير الصالح + خطأ الشبكة برسالة عربية + تقدّم',
       res.total === 2 && res.failed === 2 && res.sent === 0 &&
       res.results[0].ok === false && res.results[0].code === 'INVALID_PHONE' &&
-      res.results[1].ok === false && res.results[1].error === 'net down' &&
+      res.results[1].ok === false && res.results[1].code === 'NETWORK' &&
+      res.results[1].error === CFG.texts.smsUpstreamDown &&
+      res.results[1].status === 'FAILED' &&
       called === 1 && progress.length === 2 &&
       progress[1].index === 2 && progress[1].remaining === 0,
       'failed=' + res.failed + ' netCalls=' + called);
@@ -699,19 +703,28 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
   }
 }
 
-/* 45) نصوص التأكيد/التقدم/النتيجة حرفية كما في المواصفة */
+/* 45) نصوص التأكيد/التقدم/النتيجة حرفية كما في مواصفة الإرسال المباشر */
 {
-  ok('45. نصوص إرسال SMS الدقيقة (§5/§3)',
-    CFG.texts.smsConfirmTitle === 'تأكيد الإرسال' &&
-    CFG.texts.smsConfirmLine(7) === 'سيتم إرسال الرسالة إلى عدد (7) من المشرفين.' &&
-    CFG.texts.smsAsk === 'هل تريد المتابعة؟' &&
-    CFG.texts.smsConfirmAction === 'تأكيد الإرسال' &&
+  ok('45. نصوص إرسال SMS الدقيقة (§2/§6)',
+    CFG.texts.smsConfirmTitle === 'تأكيد إرسال الرسائل' &&
+    CFG.texts.smsConfirmLine(5) === 'سيتم إرسال الرسالة إلى 5 مشرفين.' &&
+    CFG.texts.smsAsk === 'هل تريد إرسال الرسالة الآن؟' &&
+    CFG.texts.smsConfirmAction === 'تأكيد وإرسال' &&
     CFG.texts.smsSending === 'جاري إرسال الرسائل...' &&
     CFG.texts.smsProgress(3, 10) === 'تم إرسال 3 من 10' &&
     CFG.texts.smsSelectOne === 'يرجى اختيار مشرف واحد على الأقل قبل الإرسال.' &&
-    CFG.texts.smsFailLine('محمد أحمد', 'رقم الهاتف غير صالح') === 'محمد أحمد — فشل الإرسال — رقم الهاتف غير صالح' &&
-    CFG.texts.smsDoneTitle === 'تم إرسال الرسائل بنجاح',
-    CFG.texts.smsConfirmLine(7));
+    CFG.texts.smsResultTotal === 'إجمالي الرسائل' &&
+    CFG.texts.smsResultSent === 'تم الإرسال بنجاح' &&
+    CFG.texts.smsResultFailed === 'فشل الإرسال' &&
+    CFG.texts.smsRetryFailed === 'إعادة إرسال الرسائل الفاشلة' &&
+    CFG.texts.smsChosen(7) === 'تم اختيار 7 مشرفين' &&
+    CFG.texts.smsChars(85) === 'عدد الأحرف: 85' &&
+    CFG.texts.smsParts(2) === 'عدد الرسائل المتوقعة: 2' &&
+    CFG.texts.smsFailSentence('محمد أحمد', 'رقم الهاتف غير صالح') === 'تعذر إرسال الرسالة إلى محمد أحمد بسبب رقم الهاتف غير صالح.' &&
+    CFG.texts.smsNoPhoneLine('خالد سعيد') === 'خالد سعيد — لا يوجد رقم جوال صالح' &&
+    CFG.texts.smsProviderNotice.includes('تم إرسال الطلب إلى مزود الرسائل') &&
+    CFG.texts.smsStatus.SENT === 'تم الإرسال' && CFG.texts.smsStatus.PENDING === 'تم الطلب',
+    CFG.texts.smsConfirmLine(5));
 }
 
 /* 46) وسم القسم في ملف الردود: يُنسب للأسبوع الصحيح ولا يُعد سجلاً */
@@ -877,6 +890,246 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
     manifest.name.includes('برامج المشرفين') && manifest.dir === 'rtl' && manifest.display === 'standalone' &&
     html.includes('rel="manifest"') && html.includes('apple-touch-icon') && html.includes('theme-color'),
     'icons=' + manifest.icons.length + ' · sizes=' + sizesOk);
+}
+
+/* 55) تنظيف وتحقق رقم الجوال قبل الإرسال (§8) */
+{
+  ok('55. تنظيف الهاتف: مسافات/شرطات/+ دولي/أرقام مشوّهة',
+    SMS.normalizePhone(' 059 123-4567 ') === '0591234567' &&
+    SMS.normalizePhone('+970 59 123 4567') === '+970591234567' &&
+    SMS.validatePhone('059 123 4567').ok === true &&
+    SMS.validatePhone('059 123 4567').phone === '0591234567' &&
+    SMS.validatePhone('+970591234567').ok === true &&
+    SMS.validatePhone('123').ok === false && SMS.validatePhone('123').code === 'INVALID_PHONE' &&
+    SMS.validatePhone('').code === 'NO_PHONES' && SMS.validatePhone(null).reason === 'لا يوجد رقم جوال صالح',
+    SMS.validatePhone('059 123 4567').phone);
+}
+
+/* 56) عدد الرسائل المتوقعة: GSM-7 مقابل يونيكود (§10) */
+{
+  const a160 = SMS.smsSegments('x'.repeat(160));
+  const a161 = SMS.smsSegments('x'.repeat(161));
+  const u70 = SMS.smsSegments('م'.repeat(70));
+  const u71 = SMS.smsSegments('م'.repeat(71));
+  ok('56. مقاطع الرسالة: لاتيني 160/153 · عربي 70/67',
+    SMS.smsSegments('') === 1 && SMS.smsSegments('Hello') === 1 &&
+    a160 === 1 && a161 === 2 && u70 === 1 && u71 === 2 &&
+    SMS.smsSegments('x'.repeat(306)) === 2 && SMS.smsSegments('x'.repeat(307)) === 3,
+    'ascii=' + a160 + '/' + a161 + ' · arabic=' + u70 + '/' + u71);
+}
+
+/* 57) sendSms: طلب مباشر للبوابة + رقم منظّف + Idempotency + الحالة */
+{
+  let captured = null;
+  const fetchMock = async (url, opts) => {
+    captured = { url, body: JSON.parse(opts.body) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, results: [{ ok: true, status: 'PENDING', messageId: 'MSG-9' }] }) };
+  };
+  const res = await SMS.sendSms('059 123 4567', 'أهلاً', { settings: {}, idempotencyKey: 'op:0', fetchImpl: fetchMock });
+  ok('57. sendSms: POST للبوابة + هاتف منظّف + Idempotency-Key + Message ID',
+    res.ok === true && res.status === 'PENDING' && res.messageId === 'MSG-9' &&
+    captured.url === '/api/sms/send' &&
+    captured.body.to === '0591234567' && captured.body.message === 'أهلاً' &&
+    captured.body.idempotencyKey === 'op:0',
+    'status=' + res.status + ' id=' + res.messageId);
+}
+
+/* 58) أخطاء البوابة برسائل عربية مفهومة بلا Stack Trace (§15) */
+{
+  const html404 = async () => ({ ok: false, status: 404, text: async () => '<html>404 page</html>' });
+  const notCfg = async () => ({ ok: false, status: 501, text: async () => JSON.stringify({ ok: false, code: 'NOT_CONFIGURED', error: 'لم يتم تهيئة مزود SMS على الخادم (SMS_UPSTREAM_URL).' }) });
+  const r1 = await SMS.sendSms('0591234567', 'x', { settings: {}, fetchImpl: html404 });
+  const r2 = await SMS.sendSms('0591234567', 'x', { settings: {}, fetchImpl: notCfg });
+  const r3 = await SMS.sendSms('', 'x', { settings: {}, fetchImpl: html404 });
+  const r4 = await SMS.sendSms('0591234567', '   ', { settings: {}, fetchImpl: html404 });
+  ok('58. أخطاء مفهومة: بوابة غير موجودة/غير مهيأة/رقم ناقص/نص فارغ',
+    r1.ok === false && r1.code === 'GATEWAY_UNAVAILABLE' && r1.error === CFG.texts.smsGatewayDown &&
+    r2.ok === false && r2.code === 'NOT_CONFIGURED' && r2.error.includes('SMS_UPSTREAM_URL') &&
+    r3.code === 'NO_PHONES' && r3.error === 'لا يوجد رقم جوال صالح' &&
+    r4.code === 'EMPTY_MESSAGE' &&
+    !String(r1.error).includes('at ') && !String(r2.error).includes('Error:'),
+    r1.code + ' / ' + r2.code + ' / ' + r3.code + ' / ' + r4.code);
+}
+
+/* 59) إرسال مجموعة: ناجح + رقم غير صالح + انقطاع — بلا إيقاف الكلي (§5) */
+{
+  const calls = [];
+  const fetchMock = async (url, opts) => {
+    const b = JSON.parse(opts.body);
+    calls.push(b);
+    if (b.to === '0599999999') throw new Error('conn reset');
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, results: [{ ok: true, status: 'SENT', messageId: 'ID-' + b.to }] }) };
+  };
+  const recipients = [
+    { name: 'أحمد', phone: '0591111111', body: 'رسالة أحمد' },
+    { name: 'محمد', phone: '12', body: 'رسالة محمد' },
+    { name: 'خالد', phone: '0599999999', body: 'رسالة خالد' },
+    { name: 'سعيد', phone: '0592222222', body: 'رسالة سعيد' },
+  ];
+  const progress = [];
+  const res = await SMS.sendBulkSms(recipients, 'نص عام', { settings: {}, idempotencyKey: 'bulk1', delayMs: 0, fetchImpl: fetchMock, onProgress: (p) => progress.push(p) });
+  ok('59. bulk: 4 مشرفين ← 2 ناجح + غير صالح + منقطع، والاستمرار بعد كل فشل',
+    res.total === 4 && res.sent === 2 && res.failed === 2 &&
+    res.results[0].ok === true && res.results[0].messageId === 'ID-0591111111' &&
+    res.results[1].code === 'INVALID_PHONE' &&
+    res.results[2].code === 'NETWORK' &&
+    res.results[3].ok === true &&
+    calls.length === 3 &&
+    calls[0].idempotencyKey === 'bulk1:0' && calls[1].idempotencyKey === 'bulk1:2' &&
+    progress.length === 4 && progress[3].index === 4,
+    'sent=' + res.sent + ' failed=' + res.failed + ' calls=' + calls.length);
+}
+
+/* 60) انقطاع بعد الثالثة: الناجحة محفوظة ولا تُعاد (§16) */
+{
+  let n = 0;
+  const seq = [];
+  const fetchMock = async (url, opts) => {
+    n++;
+    const b = JSON.parse(opts.body);
+    seq.push(b.to);
+    if (n > 3) throw new Error('offline');
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, results: [{ ok: true, status: 'SENT', messageId: 'M' + n }] }) };
+  };
+  const recipients = ['0591111111', '0592222222', '0593333333', '0594444444', '0595555555']
+    .map((p, i) => ({ name: 'مشرف ' + i, phone: p, body: 'نص' }));
+  const res = await SMS.sendBulkSms(recipients, 'نص', { settings: {}, idempotencyKey: 'cut', delayMs: 0, fetchImpl: fetchMock });
+  ok('60. انقطاع بعد 3: 3 تم · 2 لم تُرسل · بلا إعادة للناجحة',
+    res.total === 5 && res.sent === 3 && res.failed === 2 &&
+    res.results.slice(0, 3).every((r) => r.ok) &&
+    res.results.slice(3).every((r) => !r.ok && r.code === 'NETWORK') &&
+    n === 5 && seq.length === 5,
+    'sent=' + res.sent + ' calls=' + n);
+}
+
+/* 61) منع الإرسال المكرر في البوابة: نفس Idempotency-Key ← مزوّد واحد (§7) */
+{
+  GW.clearIdempotencyCache();
+  let upstreamCalls = 0;
+  const upstreamFetch = async () => { upstreamCalls++; return { ok: true, json: async () => ({ id: 'UP-1', status: 'accepted' }) }; };
+  const env = { SMS_UPSTREAM_URL: 'https://up.example/send' };
+  const body = { to: '0591234567', message: 'أهلاً', idempotencyKey: 'opX:0' };
+  const r1 = await GW.routeSms({ method: 'POST', path: '/api/sms/send', body, env, fetchImpl: upstreamFetch });
+  const r2 = await GW.routeSms({ method: 'POST', path: '/api/sms/send', body, env, fetchImpl: upstreamFetch });
+  ok('61. Idempotency: نفس المفتاح مرتين ← استدعاء المزوّد مرة واحدة فقط',
+    r1.status === 200 && r1.json.ok === true && r1.json.results[0].messageId === 'UP-1' &&
+    r1.json.results[0].status === 'PENDING' &&
+    r2.json.results[0].deduped === true && r2.json.results[0].messageId === 'UP-1' &&
+    upstreamCalls === 1,
+    'upstreamCalls=' + upstreamCalls);
+}
+
+/* 62) إعادة إرسال الفاشلة فقط — الناجحة لا تُعاد (§17) */
+{
+  const attempts = [];
+  const fetchFailOne = async (url, opts) => {
+    const b = JSON.parse(opts.body);
+    attempts.push(b.to);
+    if (b.to === '0595555555') throw new Error('down');
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, results: [{ ok: true, status: 'SENT', messageId: 'R' }] }) };
+  };
+  const recipients = [
+    { name: 'أول', phone: '0591111111', body: 'ن' },
+    { name: 'ثاني', phone: '0595555555', body: 'ن' },
+  ];
+  const r1 = await SMS.sendBulkSms(recipients, 'ن', { settings: {}, idempotencyKey: 'rt', delayMs: 0, fetchImpl: fetchFailOne });
+  const failedEntries = SMS.onlyFailed(r1.results).map((fr) => recipients.find((x) => x.phone === fr.phone));
+  attempts.length = 0;
+  const fetchOk = async (url, opts) => {
+    const b = JSON.parse(opts.body);
+    attempts.push(b.to);
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, results: [{ ok: true, status: 'SENT', messageId: 'R2' }] }) };
+  };
+  const r2 = await SMS.sendBulkSms(failedEntries, 'ن', { settings: {}, idempotencyKey: 'rt-a2', delayMs: 0, fetchImpl: fetchOk });
+  ok('62. إعادة الفاشلة فقط: استدعاء واحد للرقم الفاشل ولا إعادة للناجح',
+    r1.sent === 1 && r1.failed === 1 &&
+    SMS.onlyFailed(r1.results).length === 1 &&
+    attempts.length === 1 && attempts[0] === '0595555555' &&
+    r2.sent === 1 && r2.failed === 0,
+    'retryCalls=' + attempts.join(','));
+}
+
+/* 63) البوابة: بلا إعداد501 عربي · خطأ المزوّد مفهوم · لا سر في الاستجابة */
+{
+  GW.clearIdempotencyCache();
+  const h = await GW.routeSms({ method: 'GET', path: '/api/sms/health', env: {}, fetchImpl: null });
+  const s = await GW.routeSms({ method: 'POST', path: '/api/sms/send', body: { to: '0591234567', message: 'x' }, env: {}, fetchImpl: null });
+  let upCalls = 0;
+  const up = async () => { upCalls++; return { ok: false, status: 500, json: async () => ({ error: 'boom' }) }; };
+  const envSecret = { SMS_UPSTREAM_URL: 'https://up.example', SMS_API_TOKEN: 'SUPER-SECRET-TOKEN-123' };
+  const s500 = await GW.routeSms({ method: 'POST', path: '/api/sms/send', body: { to: '0591234567', message: 'x' }, env: envSecret, fetchImpl: up });
+  const raw = JSON.stringify(s500.json);
+  const invalid = await GW.routeSms({ method: 'POST', path: '/api/sms/send', body: { to: '12', message: 'x' }, env: envSecret, fetchImpl: up });
+  ok('63. البوابة: 501 عربي بلا إعداد · 500 مفهوم · بلا تسريب سر · رقم غير صالح بلا استدعاء',
+    h.json.configured === false && h.status === 200 &&
+    s.status === 501 && s.json.code === 'NOT_CONFIGURED' && s.json.error.includes('SMS_UPSTREAM_URL') &&
+    s500.status === 502 && s500.json.results[0].error.includes('خطأ مؤقت') &&
+    !raw.includes('SUPER-SECRET-TOKEN-123') &&
+    invalid.status === 400 && invalid.json.results[0].code === 'INVALID_PHONE' &&
+    upCalls === 1,
+    's500=' + s500.status + ' invalid=' + invalid.status + ' up=' + upCalls);
+}
+
+/* 64) تكامل حقيقي عبر HTTP: الواجهة ← بوابة الخادم ← مزوّد وهمي ← Message ID */
+{
+  const http = await import('http');
+  const upstreamSeen = [];
+  let port = 0;
+  const srv = http.createServer(async (req, res) => {
+    let d = '';
+    for await (const c of req) d += c;
+    if (req.url === '/up') {
+      upstreamSeen.push(JSON.parse(d || '{}'));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ id: 'UP-77', status: 'accepted' }));
+      return;
+    }
+    if (req.url === '/api/sms/send') {
+      const out = await GW.routeSms({
+        method: 'POST',
+        path: '/api/sms/send',
+        body: JSON.parse(d || '{}'),
+        env: { SMS_UPSTREAM_URL: 'http://127.0.0.1:' + port + '/up' },
+      });
+      res.writeHead(out.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out.json));
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  port = srv.address().port;
+  try {
+    const r = await SMS.sendSms('+970 59 123 4567', 'رسالة تكامل', {
+      settings: { smsGatewayUrl: 'http://127.0.0.1:' + port + '/api/sms/send' },
+      idempotencyKey: 'it:1',
+    });
+    ok('64. تكامل HTTP كامل: عميل ← بوابة ← مزوّد وهمي ← Message ID',
+      r.ok === true && r.status === 'PENDING' && r.messageId === 'UP-77' &&
+      upstreamSeen.length === 1 &&
+      upstreamSeen[0].to === '+970591234567' &&
+      upstreamSeen[0].message === 'رسالة تكامل' &&
+      upstreamSeen[0].idempotencyKey === 'it:1:+970591234567',
+      'status=' + r.status + ' id=' + r.messageId);
+  } finally {
+    srv.close();
+  }
+}
+
+/* 65) سجل الرسائل: الحالات + Message ID + المستخدم + هاتف مموّه (§11) */
+{
+  LOG.smsLogClear();
+  LOG.smsLogAdd({ name: 'مشرف تجريبي', phone: '0591234567', body: 'نص الرسالة', status: 'PENDING', messageId: 'MSG-5', user: 'مدير', provider: 'gateway' });
+  LOG.smsLogAdd({ name: 'آخر', phone: '0599999999', body: 'نص الرسالة', status: 'FAILED', ok: false, user: 'مدير', error: 'رقم الهاتف غير صالح', provider: 'gateway' });
+  const l = LOG.smsLogList();
+  ok('65. سجل SMS: PENDING/FAILED + Message ID + مستخدم + هاتف مموّه آمن',
+    l.length === 2 &&
+    l[0].statusCode === 'FAILED' && l[0].status === 'فشل' && l[0].error === 'رقم الهاتف غير صالح' &&
+    l[1].statusCode === 'PENDING' && l[1].status === 'تم الطلب' &&
+    l[1].messageId === 'MSG-5' && l[1].user === 'مدير' &&
+    l[1].phone === '0591****67' && l[1].phone.indexOf('0591234567') === -1,
+    l[1].phone + ' / ' + l[1].status);
+  LOG.smsLogClear();
 }
 
 /* سجل العمليات + أدوات */
