@@ -1,8 +1,10 @@
 /**
- * EshrafProgramManager — AppendRows.gs (v2)
+ * EshrafProgramManager — AppendRows.gs (v3)
  * مسار الكتابة الوحيد للتطبيق:
  *   1) action 'append'      → إضافة صفوف بتنسيق ردود الاستمارة إلى الأرشيف النهائي
  *                             (ترويسة واحدة أعلى الملف فقط إذا كان فارغاً — لا ترويسة لكل أسبوع،
+ *                             وسطر وسم قسم (MAGIC_HEADER + تسمية الأسبوع) قبل كل دفعة ليُسند
+ *                             الصفوف لأسبوعها حتى إن كانت طوابعها الزمنية أقدم من بدايته —
  *                             ومنع تكرار بمفتاح: الأسبوع + اسم المشرف + النوع + الأيام).
  *   2) action 'deleteRows'  → حذف صفوف محددة تحديداً من ملف الردود — لا يُستدعى إلا بعد
  *                             تحقق التطبيق من وصول الصفوف للأرشيف. لا يُحذف صف 1 (الترويسة)
@@ -59,10 +61,13 @@ function append_(payload) {
   var all = lastRow > 0 ? sh.getRange(1, 1, lastRow, lastCol).getValues() : [];
   var seen = seenKeys_(all);
 
+  /* أسبوع الدفعة (من تسمية الأسبوع) — مفتاح الصفوف الجديدة يُنسب له لا لطابعها الزمني */
+  var newWeek = weekStartOfLabel_(payload.weekLabel) || '';
+
   var toAppend = [];
   var skipped = 0;
   for (var k = 0; k < rows.length; k++) {
-    var key = rowKey_(cells_(rows[k]), '');
+    var key = rowKey_(cells_(rows[k]), newWeek);
     if (!key) continue;
     if (seen[key]) { skipped++; continue; }
     seen[key] = true;
@@ -70,8 +75,17 @@ function append_(payload) {
   }
 
   if (toAppend.length) {
+    var cols = toAppend[0].length;
+    var outRows = [];
+    /* وسم قسم قبل الصفوف: يقرأه التطبيق (parseAdminCsv) ليربط هذه الصفوف بأسبوعها الصحيح */
+    if (payload.weekLabel) {
+      var mrow = [MAGIC_HEADER, String(payload.weekLabel)];
+      while (mrow.length < cols) mrow.push('');
+      outRows.push(mrow);
+    }
+    outRows = outRows.concat(toAppend);
     var startRow = sh.getLastRow() + 1;
-    sh.getRange(startRow, 1, toAppend.length, toAppend[0].length).setValues(toAppend);
+    sh.getRange(startRow, 1, outRows.length, cols).setValues(outRows);
   }
 
   return json_({ ok: true, appended: toAppend.length, skipped: skipped, headerWritten: headerWritten });
@@ -112,7 +126,9 @@ function rowKey_(cells, week) {
   var days = [];
   var d;
   if (TS_RE.test(cells[0])) {
-    w = weekStartOfDate_(cells[0]) || w;
+    /* الأسبوع الممرّر (من وسم القسم) أولاً — طابع الصف الزمني احتياطي فقط:
+       صفوف الإرسال المبكر طوابعها أقدم من بداية أسبوعها. */
+    w = w || weekStartOfDate_(cells[0]);
     name = norm_(cells[1] || '');
     type = isType_(cells[16]) ? cells[16] : '';
     for (d = 2; d <= 13 && d < cells.length; d++) days.push(cells[d]);
@@ -232,5 +248,5 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, service: 'EshrafProgramManager AppendRows v2', hint: 'استخدم POST: append | deleteRows' });
+  return json_({ ok: true, service: 'EshrafProgramManager AppendRows v3', hint: 'استخدم POST: append | deleteRows' });
 }

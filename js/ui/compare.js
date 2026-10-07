@@ -4,14 +4,14 @@
 import { CFG } from '../config.js';
 import { escapeHtml, ltr, normName } from '../utils.js';
 import { tableHtml, statCard, statusPill, htmlCell } from './components.js';
-import { responsesOfWeek } from '../services/responsesService.js';
+import { getResponseRecords } from '../services/responsesService.js';
 import { matchByName } from '../services/matchingService.js';
 
 export function render(root, app) {
   const week = app.week;
   const master = (app.data && app.data.master) || [];
   const rows = app.status.rows;
-  const weekRecs = week ? responsesOfWeek(app.data, week.start) : [];
+  const weekRecs = week ? getResponseRecords(app.data, week.start) : [];
   const { matched, unmatched } = matchByName(master, weekRecs);
 
   const senderNorms = new Set(matched.map((r) => r.supervisorNorm));

@@ -105,8 +105,6 @@ function runReport(root, app) {
 function paintResult(root, app, res) {
   const { week, statusRep, detail } = res;
   const t = reportTable(statusRep.rows);
-  const maxRows = 300;
-  const shown = detail.slice(0, maxRows);
 
   const actions = root.querySelector('#r-actions');
   actions.innerHTML =
@@ -129,9 +127,8 @@ function paintResult(root, app, res) {
     '<div class="card"><h3>🗓 تفاصيل السجلات</h3>' +
       tableHtml(
         ['المشرف', 'الأسبوع', 'النوع', 'اليوم', 'المدرسة', 'الفعالية', 'الملاحظات', 'المصدر', 'الوقت'],
-        shown.map((d) => [d.supervisor, ltr(d.week ? d.week.label : ''), d.type || '', d.dayLabel, d.school, d.activity, d.notes, d.source, d.timestamp])
+        detail.map((d) => [d.supervisor, ltr(d.week ? d.week.label : ''), d.type || '', d.dayLabel, d.school, d.activity, d.notes, d.source, d.timestamp])
       ) +
-      (detail.length > maxRows ? '<p class="muted">يُعرض أول ' + maxRows + ' صفوف من ' + detail.length + ' — التصدير يشمل الكل.</p>' : '') +
     '</div>';
 
   actions.querySelector('#r-xlsx').addEventListener('click', () => doExcel(app, res));

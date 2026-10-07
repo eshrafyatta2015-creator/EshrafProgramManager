@@ -13,6 +13,7 @@ import * as details from './details.js';
 import * as sms from './sms.js';
 import * as migrate from './migrate.js';
 import * as reports from './reports.js';
+import * as diagnostics from './diagnostics.js';
 import * as settings from './settings.js';
 
 export const App = {
@@ -45,6 +46,7 @@ const TABS = {
   sms,
   migrate,
   reports,
+  diagnostics,
   settings,
 };
 
@@ -176,7 +178,7 @@ export function go(tab) {
   render();
 }
 
-async function refresh(force, manual) {
+export async function refresh(force, manual) {
   setLoading(true, manual ? 'جارٍ تحديث البيانات…' : 'جارٍ تحميل البيانات…');
   try {
     App.data = await getData({ force: force !== false });

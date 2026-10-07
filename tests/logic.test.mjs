@@ -28,6 +28,7 @@ const MT = await import('../js/services/matchingService.js');
 const HS = await import('../js/services/headerService.js');
 const WK = await import('../js/services/weekService.js');
 const DS = await import('../js/services/duplicateService.js');
+const RS = await import('../js/services/responsesService.js');
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra) => {
@@ -550,6 +551,94 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
     String(programs.header[0]).toLowerCase().includes('timestamp') &&
     String(programs.header[1]).includes('اسم المشرف'),
     'cells=' + (programs.header ? programs.header.length : 0));
+}
+
+/* 36) قاعدة إسناد أسبوع الرد (§7): ترويسة الاستمارة + نافذة إرسال مبكر يومين (الجمعة/السبت) */
+{
+  const header = U.parseWeekLabel('4/10-10/10');
+  const ts = (s) => U.parseTimestamp(s);
+  const rFri = M.weekForResponse(ts('02/10/2026 09:00:00'), header);
+  const rSat = M.weekForResponse(ts('03/10/2026 23:30:00'), header);
+  const rSun = M.weekForResponse(ts('04/10/2026 00:16:00'), header);
+  const rMon = M.weekForResponse(ts('05/10/2026 10:00:00'), header);
+  const rThu = M.weekForResponse(ts('01/10/2026 12:00:00'), header);
+  const rOld = M.weekForResponse(ts('20/09/2026 10:00:00'), header);
+  const rNone = M.weekForResponse(null, header);
+  const rNoHdr = M.weekForResponse(ts('03/10/2026 12:00:00'), null);
+  ok('36. قاعدة إسناد الأسبوع: ترويسة + إرسال مبكر يومين (§7)',
+    rFri.start === '2026-10-04' && rSat.start === '2026-10-04' &&
+    rSun.start === '2026-10-04' && rMon.start === '2026-10-04' &&
+    rThu.start === '2026-09-27' && rOld.start === '2026-09-20' &&
+    rNone && rNone.start === header.start &&
+    rNoHdr && rNoHdr.start === '2026-09-27',
+    'جمعة/سبت→الترويسة · خميس→أسبوعه · بلاطابع→الترويسة');
+}
+
+/* 37) كل ردود الملف الحيّة منسوبة بالقاعدة الجديدة (سبب الجذر: 27/27 في الأسبوع المعلن) */
+{
+  const inHeader = programs.headerWeek && programs.records.every((r) => r.weekStart === programs.headerWeek.start);
+  const ruleHolds = programs.records.every((r) => {
+    const w = M.weekForResponse(U.parseTimestamp(r.timestamp), programs.headerWeek);
+    return w && w.start === r.weekStart;
+  });
+  const accounting = programs.rawRows === programs.records.length + programs.excluded.length;
+  ok('37. ردود الملف كلها في أسبوع الترويسة (لا ردود ضائعة في أسبوع سابق)',
+    inHeader && ruleHolds && accounting,
+    'سجلات=' + programs.records.length + ' · ترويسة=' + (programs.headerWeek && programs.headerWeek.label) +
+    ' · مبكر=' + programs.records.filter((r) => r.early).length + ' · مستبعد=' + programs.excluded.length);
+}
+
+/* 38) إحصاءات الردود المنهجية: إجمالي/مخطط/فعلي/مميز/غائب — بالأرقام الفعلية */
+{
+  const data = { records, master, programs, admin, weeks };
+  const wk = weeks.find((x) => x.label === '4/10-10/10') || weeks[0];
+  const st = RS.responseStats(data, wk.start);
+  const senders = new Set(programs.records.map((r) => r.supervisorNorm));
+  const matched = Array.from(senders).filter((k) => master.some((s) => s.nameNorm === k)).length;
+  ok('38. إحصاءات الردود المفصلة تطابق المصدر (27/26/1/27/4)',
+    st.totalResponses === 27 &&
+    st.planningResponses === 26 && st.actualResponses === 1 &&
+    st.uniqueSupervisors === 27 && st.missingSupervisors === master.length - matched &&
+    st.totalResponses === programs.records.length,
+    `total=${st.totalResponses} plan=${st.planningResponses} act=${st.actualResponses} uniq=${st.uniqueSupervisors} missing=${st.missingSupervisors}`);
+}
+
+/* 39) لا ردود مفقودة عن شاشة الأسبوع بعد الإصلاح (مفتاح الفرق = صفر) */
+{
+  const data = { records, master, programs, admin, weeks };
+  const wk = weeks.find((x) => x.label === '4/10-10/10') || weeks[0];
+  const missing = RS.findMissingResponseRecords(data, wk.start);
+  ok('39. الردود المفقودة عن شاشة الأسبوع = صفر',
+    missing.length === 0,
+    'missing=' + missing.length + (missing.length ? ' · ' + missing[0].reason : ''));
+}
+
+/* 40) وسم القسم في الأرشيف: صفوف الترحيل تُنسب لأسبوع الوسم حتى لو طابعها أقدم */
+{
+  const hdr = HS.defaultHeaderRow('4/10-10/10');
+  const dayCells = [];
+  for (let d = 0; d < 6; d++) dayCells.push(d === 0 ? 'مدرسة الوسم' : '', d === 0 ? 'نشاط الوسم' : '');
+  const marker = [CFG.magicHeader, '4/10-10/10'];
+  const early = ['03/10/2026 23:00:00', 'مشرف إرسال مبكر', ...dayCells, 'ملاحظة', '11223', 'تخطيط'];
+  const withMarker = M.parseAdminCsv(U.csvSerialize([hdr, marker, early]));
+  const without = M.parseAdminCsv(U.csvSerialize([hdr, early]));
+  ok('40. وسم القسم يربط صفوف الترحيل بأسبوعها (إرسال مبكر)',
+    withMarker.records.length === 1 && withMarker.records[0].weekStart === '2026-10-04' &&
+    withMarker.weeks.some((w) => w.start === '2026-10-04') &&
+    without.records.length === 1 && without.records[0].weekStart === '2026-09-27',
+    'مع وسم=' + (withMarker.records[0] && withMarker.records[0].weekStart) +
+    ' · بلا وسم=' + (without.records[0] && without.records[0].weekStart));
+}
+
+/* 41) الفرق بين المصدر (قراءة طازجة) والموقع (الذاكرة) = صفر — بالأرقام الحقيقية */
+{
+  const data = { records, master, programs, admin, weeks };
+  const wk = weeks.find((x) => x.label === '4/10-10/10') || weeks[0];
+  const cmp = await RS.compareSourceWithSite(data, wk.start);
+  ok('41. فرق المصدر والموقع = صفر (كل الأسابيع + أسبوع العرض)',
+    cmp.totalDifference === 0 && cmp.weekDifference === 0 &&
+    cmp.fileTotal === cmp.siteTotal && cmp.fileWeek === cmp.siteWeek,
+    `ملف=${cmp.fileTotal} موقع=${cmp.siteTotal} · أسبوع ${cmp.fileWeek}/${cmp.siteWeek} · خام=${cmp.rawRows}`);
 }
 
 /* سجل العمليات + أدوات */

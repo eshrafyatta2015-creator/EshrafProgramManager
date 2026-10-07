@@ -1,7 +1,7 @@
 /* Models — تحليل ملفات CSV الحقيقية إلى سجلات موحّدة */
 
 import { CFG } from './config.js';
-import { csvParse, cell, normName, parseWeekLabel, weekOfDate, parseTimestamp, isoDate, uniqueBy } from './utils.js';
+import { csvParse, cell, normName, parseWeekLabel, weekOfDate, parseTimestamp, isoDate, uniqueBy, addDays, parseIso } from './utils.js';
 
 const PLACEHOLDERS = new Set([
   normName(CFG.magicHeader),
@@ -60,20 +60,40 @@ export function parseListsCsv(text) {
 
 /* ---------- PROGRAMS: ردود الاستمارة الحيّة ---------- */
 
+/* أيام الإرسال المبكر قبل بداية الأسبوع: الجمعة/السبت قبل الأحد (§سبب الجذر) */
+export const EARLY_RESPONSE_DAYS = 2;
+
+/* إسناد أسبوع الرد (§7): الأسبوع المعلن في ترويسة الاستمارة هو الأسبوع الذي يجيب عنه النموذج،
+   وردود الجمعة/السبت قبل بداية الأسبوع إرسال مبكر للأسبوع التالي — تُنسب إليه لا إلى الأسبوع الماضي.
+   الأقدم من نافذة الإرسال المبكر (لم يُرحّل بعد) يبقى في أسبوع طابعه الزمني. */
+export function weekForResponse(ts, headerWeek) {
+  if (!headerWeek) return ts ? weekOfDate(isoDate(ts)) : null;
+  if (!ts) return headerWeek;
+  const d = isoDate(ts);
+  const early = isoDate(addDays(parseIso(headerWeek.start), -EARLY_RESPONSE_DAYS));
+  if (d >= early) return headerWeek;
+  return weekOfDate(d);
+}
+
 export function parseProgramsCsv(text) {
   const rows = csvParse(text);
   const records = [];
-  if (!rows.length) return { headerWeek: null, header: [], records: [] };
+  const excluded = [];
+  if (!rows.length) return { headerWeek: null, header: [], records: [], excluded, rawRows: 0 };
   const header = rows[0];
   const headerWeek = parseWeekLabel(cell(header, 2));
+  let rawRows = 0;
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
+    if (r.every((c) => !String(c == null ? '' : c).trim())) continue;
+    rawRows++;
     const sup = cell(r, 1);
-    if (!sup || isNoiseSupervisor(sup)) continue;
+    if (!sup) { excluded.push({ row: i, supervisor: '', timestamp: cell(r, 0), reason: 'بلا اسم مشرف' }); continue; }
+    if (isNoiseSupervisor(sup)) { excluded.push({ row: i, supervisor: sup, timestamp: cell(r, 0), reason: 'ترويسة أو صف ضوضاء' }); continue; }
     const tsRaw = cell(r, 0);
     const ts = parseTimestamp(tsRaw);
-    const week = (ts && weekOfDate(isoDate(ts))) || headerWeek;
-    if (!week) continue;
+    const week = weekForResponse(ts, headerWeek);
+    if (!week) { excluded.push({ row: i, supervisor: sup, timestamp: tsRaw, reason: 'لا طابع زمني ولا أسبوع ترويسة' }); continue; }
     const days = [];
     for (let d = 0; d < 6; d++) {
       days.push({ school: cell(r, 2 + d * 2), activity: cell(r, 3 + d * 2) });
@@ -90,10 +110,11 @@ export function parseProgramsCsv(text) {
       type: validType(cell(r, 16)),
       timestamp: tsRaw,
       tsTime: ts ? ts.getTime() : null,
+      early: !!(headerWeek && ts && isoDate(ts) < headerWeek.start),
       rowIndex: i,
     });
   }
-  return { headerWeek, header, records };
+  return { headerWeek, header, records, excluded, rawRows };
 }
 
 /* ---------- ADMIN: الأرشيف متعدد الأسابيع (1rthlma) ---------- */
@@ -135,13 +156,12 @@ export function parseAdminCsv(text) {
     }
 
     if (TS_RE.test(c0)) {
-      /* صف بتنسيق ردود الاستمارة (timestamp في العمود A) — يُقرأ ويُستخرج أسبوعه من الطابع الزمني */
+      /* صف بتنسيق ردود الاستمارة — أسبوعه من وسم القسم (كتابة الترحيل) مع نفس قاعدة الإرسال المبكر */
       const ts = parseTimestamp(c0);
       if (!ts) { skipped.timestampLike++; continue; }
       const sup = c1;
       if (!sup || isNoiseSupervisor(sup)) { skipped.noise++; continue; }
-      const tsWeek = weekOfDate(isoDate(ts));
-      const w = tsWeek || currentWeek;
+      const w = weekForResponse(ts, currentWeek);
       if (!w) { skipped.noise++; continue; }
       const days = [];
       let nonEmptyDays = 0;
