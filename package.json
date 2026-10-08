@@ -6,6 +6,6 @@
   "description": "برنامج متابعة إرسال المشرفين — لوحة ويب ثابتة مع Google Sheets وSMS",
   "scripts": {
     "serve": "node serve.mjs",
-    "test": "node tests/data-integrity.mjs && node tests/logic.test.mjs"
+    "test": "node tests/data-integrity.mjs && node tests/logic.test.mjs && node tests/aia.test.mjs"
   }
 }

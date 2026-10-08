@@ -589,18 +589,21 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
     ' · مبكر=' + programs.records.filter((r) => r.early).length + ' · مستبعد=' + programs.excluded.length);
 }
 
-/* 38) إحصاءات الردود المنهجية: إجمالي/مخطط/فعلي/مميز/غائب — بالأرقام الفعلية */
+/* 38) إحصاءات الردود المنهجية: تُشتق من المصدر مباشرة (لا أرقام ثابتة تتغيّر مع الشيت الحيّ) */
 {
   const data = { records, master, programs, admin, weeks };
   const wk = weeks.find((x) => x.label === '4/10-10/10') || weeks[0];
   const st = RS.responseStats(data, wk.start);
   const senders = new Set(programs.records.map((r) => r.supervisorNorm));
   const matched = Array.from(senders).filter((k) => master.some((s) => s.nameNorm === k)).length;
-  ok('38. إحصاءات الردود المفصلة تطابق المصدر (27/26/1/27/4)',
-    st.totalResponses === 27 &&
-    st.planningResponses === 26 && st.actualResponses === 1 &&
-    st.uniqueSupervisors === 27 && st.missingSupervisors === master.length - matched &&
-    st.totalResponses === programs.records.length,
+  const expTotal = programs.records.length;
+  const expPlan = programs.records.filter((r) => r.type === CFG.typePlanning).length;
+  const expAct = programs.records.filter((r) => r.type === CFG.typeActual).length;
+  ok('38. إحصاءات الردود المفصلة تطابق المصدر (مباشرًة من السجلات)',
+    st.totalResponses === expTotal &&
+    st.planningResponses === expPlan && st.actualResponses === expAct &&
+    st.uniqueSupervisors === senders.size && st.missingSupervisors === master.length - matched &&
+    st.planningResponses + st.actualResponses === st.totalResponses,
     `total=${st.totalResponses} plan=${st.planningResponses} act=${st.actualResponses} uniq=${st.uniqueSupervisors} missing=${st.missingSupervisors}`);
 }
 
