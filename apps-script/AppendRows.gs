@@ -202,13 +202,11 @@ function cells_(row) {
   return out;
 }
 
-/* تطبيع قيمة خلية إلى نص مفرد — التواريخ الحقيقية (Date) بصيغة dd/mm/yyyy HH:mm:ss
-   لتتطابق مع الطوابع النصية القادمة من قراءة التطبيق للـ CSV */
-function tsStr_(v) {
+/* تطبيع قيمة خلية إلى نص مفرد — التواريخ الحقيقية (Date) تُنسَّق بتوقيت الجدول نفسه
+   (وليس توقيت السكربت) لتتطابق مع الطوابع النصية القادمة من قراءة التطبيق للـ CSV */
+function tsStr_(v, tz) {
   if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
-    var p = function (n) { return (n < 10 ? '0' : '') + n; };
-    return p(v.getDate()) + '/' + p(v.getMonth() + 1) + '/' + v.getFullYear() +
-      ' ' + p(v.getHours()) + ':' + p(v.getMinutes()) + ':' + p(v.getSeconds());
+    return Utilities.formatDate(v, tz || Session.getScriptTimeZone(), 'dd/MM/yyyy HH:mm:ss');
   }
   return String(v == null ? '' : v).trim();
 }
@@ -272,6 +270,7 @@ function deleteRows_(payload) {
 
   var lastCol = Math.max(sh.getLastColumn(), 17);
   var all = sh.getRange(1, 1, lastRow, lastCol).getValues();
+  var tz = ss.getSpreadsheetTimeZone();
 
   var want = {};
   for (var i = 0; i < targets.length; i++) {
@@ -294,14 +293,14 @@ function deleteRows_(payload) {
     if (WEEK_RE.test(c0) && !TS_RE.test(c0)) continue;
     var ts = '';
     var name = '';
-    var t0 = tsStr_(raw[0]);
+    var t0 = tsStr_(raw[0], tz);
     if (TS_RE.test(t0)) {
       ts = t0;
       name = c1;
     } else {
       name = c0;
       for (var q = 1; q < raw.length; q++) {
-        var tq = tsStr_(raw[q]);
+        var tq = tsStr_(raw[q], tz);
         if (TS_RE.test(tq)) { ts = tq; break; }
       }
     }
@@ -374,5 +373,5 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, service: 'EshrafProgramManager AppendRows v4.1', hint: 'استخدم POST: append | deleteRows | setWeekHeader' });
+  return json_({ ok: true, service: 'EshrafProgramManager AppendRows v4.2', hint: 'استخدم POST: append | deleteRows | setWeekHeader' });
 }
