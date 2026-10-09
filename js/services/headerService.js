@@ -98,6 +98,94 @@ export function headerMapFor(data) {
   return { map: buildHeaderMap(def), origin: 'default', cells: def };
 }
 
+/* مطابقة صفوف بتنسيق ردود الاستمارة إلى ترويسة الهدف باستخدام أسماء الأعمدة لا ترتيبها (§38 خطوة 4-5):
+   - كل حقل يوضع في عموده بحسب اسمه في ترويسة الهدف.
+   - العمود الناقص يُضاف أولاً في خلية ترويسة فارغة، وإلا يُلحق نهاية الترويسة — دون مس أي بيانات تاريخية.
+   - لا يُكتب إلا صف الترويسة (خلاياه الفارغة/النهاية) — صفوف البيانات القديمة تبقى كما هي. */
+export function alignRowsToHeader(headerCells, rows) {
+  const h = (headerCells || []).map((c) => String(c == null ? '' : c).trim());
+  const list = (rows || []).map((r) => Array.isArray(r) ? r.map((c) => String(c == null ? '' : c)) : r);
+  const asIs = () => ({ rows: list, headerCells: h, headerOut: h.slice(), headerPatch: [], headerExtend: [], aligned: false });
+  if (!h.length || !list.length) return asIs();
+
+  const idx = { ts: -1, name: -1, notes: -1, code: -1, type: -1 };
+  const schoolsOrder = [];
+  const actsOrder = [];
+  h.forEach((cellText, i) => {
+    const low = cellText.toLowerCase();
+    if (idx.ts < 0 && low.includes('timestamp')) { idx.ts = i; return; }
+    if (idx.name < 0 && cellText.includes('اسم المشرف')) { idx.name = i; return; }
+    if (idx.notes < 0 && cellText.includes('ملاحظات')) { idx.notes = i; return; }
+    if (idx.code < 0 && (low.includes('valid code') || cellText.includes('كود'))) { idx.code = i; return; }
+    if (idx.type < 0 && cellText.includes('نوع البرنامج')) { idx.type = i; return; }
+    if (cellText.startsWith('تفاصيل الايام')) { actsOrder.push(i); return; }
+    if (/\d{1,2}\/\d{1,2}\s*-\s*\d{1,2}\/\d{1,2}/.test(cellText)) { schoolsOrder.push(i); return; }
+  });
+
+  /* أيام الأسبوع: برمز اليوم في اسم العمود أولاً، وبالترتيب المتبادل احتياطاً */
+  const days = [];
+  for (let d = 0; d < CFG.days.length; d++) {
+    const tok = CFG.days[d].sheet;
+    let sc = -1;
+    let ac = -1;
+    h.forEach((c, i) => {
+      const isDetail = c.startsWith('تفاصيل الايام');
+      if (c.includes(tok) && !isDetail && sc < 0) sc = i;
+      if (c.includes(tok) && isDetail && ac < 0) ac = i;
+    });
+    days.push({ school: sc, activity: ac });
+  }
+  const zip = Math.min(schoolsOrder.length, actsOrder.length, CFG.days.length);
+  for (let d = 0; d < CFG.days.length; d++) {
+    if (days[d].school < 0 && d < zip) days[d].school = schoolsOrder[d];
+    if (days[d].activity < 0 && d < zip) days[d].activity = actsOrder[d];
+  }
+  /* ترويسة غير قابلة للمطابقة (بلا اسم مشرف أو بلا أعمدة أيام) → لا مطابقة ولا تغيير */
+  if (idx.name < 0 || days.some((d) => d.school < 0 || d.activity < 0)) return asIs();
+
+  const used = new Set([idx.name, idx.notes, idx.code, idx.type, idx.ts].filter((x) => x >= 0));
+  days.forEach((d) => { used.add(d.school); used.add(d.activity); });
+  const patch = [];
+  const extend = [];
+  const alloc = (label) => {
+    for (let i = 0; i < h.length; i++) {
+      if (!h[i] && !used.has(i)) { used.add(i); patch.push({ col: i + 1, name: label }); return i; }
+    }
+    const at = h.length + extend.length;
+    used.add(at);
+    extend.push(label);
+    return at;
+  };
+  const colOf = (cur, label) => (cur >= 0 ? cur : alloc(label));
+
+  /* ترتيب الإسناد: الكود أولاً يتلقى الخلية الفارغة في ترويسة الأرشيف
+     (parseAdminCsv يقرأ الكود من الخلية 16 في الصف الاسمي)، ثم الطابع الزمني يُلحق نهاية الترويسة */
+  const iType = colOf(idx.type, TYPE_HEADER);
+  const iNotes = colOf(idx.notes, NOTES_HEADER);
+  const iCode = colOf(idx.code, CODE_HEADER);
+  const iTs = colOf(idx.ts, 'Timestamp');
+  const headerOut = h.slice();
+  for (const p of patch) headerOut[p.col - 1] = p.name;
+  const len = Math.max(headerOut.length, h.length + extend.length);
+  while (headerOut.length < len) headerOut.push(extend[headerOut.length - h.length] || '');
+
+  const out = list.map((src) => {
+    if (!Array.isArray(src) || src.length !== 17) return src;
+    const row = new Array(len).fill('');
+    row[iTs] = src[0] || '';
+    row[idx.name] = src[1] || '';
+    for (let d = 0; d < 6 && d < days.length; d++) {
+      row[days[d].school] = src[2 + d * 2] || '';
+      row[days[d].activity] = src[3 + d * 2] || '';
+    }
+    row[iNotes] = src[14] || '';
+    row[iCode] = src[15] || '';
+    row[iType] = src[16] || '';
+    return row;
+  });
+  return { rows: out, headerCells: h, headerOut, headerPatch: patch, headerExtend: extend, aligned: true };
+}
+
 export function saveHeaderSnapshot(cells) {
   const list = (cells || []).map((c) => String(c == null ? '' : c));
   if (!list.length) return false;

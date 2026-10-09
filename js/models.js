@@ -136,7 +136,8 @@ export function parseAdminCsv(text) {
   const records = [];
   const weeks = [];
   const skipped = { headers: 0, noise: 0, timestampLike: 0, empty: 0 };
-  if (!rows.length) return { weeks, records, skipped };
+  if (!rows.length) return { weeks, records, skipped, header: [] };
+  const header = rows[0];
   let currentWeek = parseWeekLabel(cell(rows[0], 1));
 
   for (let i = 0; i < rows.length; i++) {
@@ -209,7 +210,7 @@ export function parseAdminCsv(text) {
     const c14 = cell(r, 14);
     const c15 = cell(r, 15);
     if (validType(c15)) { type = c15; code = c14; }
-    else if (validType(c14)) { type = c14; code = ''; }
+    else if (validType(c14)) { type = c14; code = c15 && !validType(c15) ? c15 : ''; }
 
     const days = [];
     let nonEmptyDays = 0;
@@ -238,7 +239,7 @@ export function parseAdminCsv(text) {
   }
 
   weeks.sort((a, b) => (a.start < b.start ? 1 : -1));
-  return { weeks, records, skipped };
+  return { weeks, records, skipped, header };
 }
 
 /* ---------- المشرفون الموحدون (مفتاح المطابقة: الاسم فقط — id/phone لا تُستخدم للمطابقة) ---------- */

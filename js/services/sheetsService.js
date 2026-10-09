@@ -87,7 +87,7 @@ export function getDataFromCache() {
 
 /* الكتابة: عبر Google Apps Script Web App فقط (رابط CSV للقراءة فقط) */
 
-export async function appendData({ rows, markerRow, weekLabel, headerRow, appsScriptUrl, sheetId }) {
+export async function appendData({ rows, markerRow, weekLabel, headerRow, headerCells, headerPatch, headerExtend, appsScriptUrl, sheetId }) {
   if (!appsScriptUrl) {
     return { ok: false, code: 'NOT_CONFIGURED', error: 'لم يتم ضبط رابط Apps Script بعد (الإعدادات ← ربط الكتابة).' };
   }
@@ -108,6 +108,9 @@ export async function appendData({ rows, markerRow, weekLabel, headerRow, appsSc
           rows,
           weekLabel: weekLabel || '',
           headerRow: headerRow || null,
+          headerCells: headerCells || null,
+          headerPatch: headerPatch && headerPatch.length ? headerPatch : null,
+          headerExtend: headerExtend && headerExtend.length ? headerExtend : null,
           marker: markerRow || null,
         }),
         signal: ctrl.signal,
@@ -117,9 +120,9 @@ export async function appendData({ rows, markerRow, weekLabel, headerRow, appsSc
     }
     const data = await resp.json().catch(() => null);
     if (!resp.ok || !data || data.ok !== true) {
-      return { ok: false, code: 'SCRIPT_ERROR', error: (data && data.error) || ('HTTP ' + resp.status), raw: data };
+      return { ok: false, code: data && data.code ? data.code : 'SCRIPT_ERROR', error: (data && data.error) || ('HTTP ' + resp.status), raw: data };
     }
-    return { ok: true, appended: data.appended | 0, skipped: data.skipped | 0, headerWritten: !!data.headerWritten };
+    return { ok: true, appended: data.appended | 0, skipped: data.skipped | 0, headerWritten: !!data.headerWritten, headerPatched: data.headerPatched | 0, headerExtended: data.headerExtended | 0 };
   } catch (e) {
     return { ok: false, code: 'NETWORK', error: String((e && e.message) || e) };
   }
@@ -155,6 +158,39 @@ export async function deleteResponseRows({ rows, appsScriptUrl, sheetId }) {
     return { ok: true, deleted: data.deleted | 0, expected: data.expected | rows.length };
   } catch (e) {
     return { ok: false, code: 'NETWORK', error: String((e && e.message) || e), deleted: 0, expected: rows.length };
+  }
+}
+
+/* تحديث تسمية الأسبوع في صف الترويسة فقط (صف 1) — تجهيز الاستمارة للأسبوع الجديد (§38).
+   لا يُمس أي صف بيانات، ولا تُنشأ ترويسة متكررة، والتحقق يُعاد قراءته من الملف. */
+export async function updateHeaderWeek({ oldLabel, newLabel, appsScriptUrl, sheetId }) {
+  if (!appsScriptUrl) {
+    return { ok: false, code: 'NOT_CONFIGURED', error: 'لم يتم ضبط رابط Apps Script بعد (الإعدادات ← ربط الكتابة).' };
+  }
+  if (!oldLabel || !newLabel || oldLabel === newLabel) {
+    return { ok: false, code: 'BAD_LABEL', error: 'تسمية أسبوع غير صالحة لتحديث الترويسة.' };
+  }
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 30000);
+    let resp;
+    try {
+      resp = await fetch(appsScriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'setWeekHeader', sheetId: sheetId || CFG.sheetIds.programs, oldLabel, newLabel }),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(t);
+    }
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok || !data || data.ok !== true) {
+      return { ok: false, code: data && data.code ? data.code : 'SCRIPT_ERROR', error: (data && data.error) || ('HTTP ' + resp.status), raw: data, updated: 0 };
+    }
+    return { ok: true, updated: data.updated | 0, already: !!data.already, verified: data.verified !== false };
+  } catch (e) {
+    return { ok: false, code: 'NETWORK', error: String((e && e.message) || e), updated: 0 };
   }
 }
 

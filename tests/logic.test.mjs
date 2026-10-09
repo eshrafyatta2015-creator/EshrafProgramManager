@@ -1135,6 +1135,366 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
   LOG.smsLogClear();
 }
 
+/* ============ 66-77) دورة الترحيل الآمنة: مطابقة الأعمدة بالاسم + ترويسة الأسبوع الجديد ============ */
+
+/* 66) مطابقة صفوف الترحيل إلى ترويسة الأرشيف الفعلية بأسماء الأعمدة (§38 خطوة 4-5) */
+{
+  const row = ['05/10/2026 09:00:00', 'مشرف الاختبار', 'م1', 'ف1', 'م2', 'ف2', 'م3', 'ف3', 'م4', 'ف4', 'م5', 'ف5', 'م6', 'ف6', 'ملاحظة', 'K-77', 'خطط'];
+  row[16] = 'تخطيط';
+  const a = HS.alignRowsToHeader(admin.header, [row]);
+  ok('66. مطابقة ترويسة الأرشيف بالاسم + عمودا الكود والطابع الناقصان',
+    a.aligned === true && a.headerPatch.length === 1 &&
+    a.headerPatch[0].col === 16 && a.headerPatch[0].name.includes('Valid Code') &&
+    a.headerExtend.length === 1 && a.headerExtend[0] === 'Timestamp' &&
+    a.rows.length === 1 && a.rows[0].length === 17 &&
+    a.rows[0][0] === 'مشرف الاختبار' &&
+    a.rows[0][1] === 'م1' && a.rows[0][2] === 'ف1' &&
+    a.rows[0][13] === 'ملاحظة' && a.rows[0][14] === 'تخطيط' &&
+    a.rows[0][15] === 'K-77' && a.rows[0][16] === '05/10/2026 09:00:00' &&
+    a.headerOut[15].includes('Valid Code') && a.headerOut[16] === 'Timestamp',
+    'patch=' + JSON.stringify(a.headerPatch) + ' extend=' + a.headerExtend.join(','));
+}
+
+/* 67) ترويسة الردود (timestamp أولاً) = مطابقة هوية بلا نقل أعمدة */
+{
+  const row = ['05/10/2026 09:00:00', 'مشرف الاختبار', 'م1', 'ف1', '', '', '', '', '', '', '', '', '', '', 'ملاحظة', 'K-77', 'تخطيط'];
+  const a = HS.alignRowsToHeader(programs.header, [row]);
+  ok('67. ترويسة الردود برموز اليوم: مطابقة هوية بلا تغيير',
+    a.aligned === true && a.headerPatch.length === 0 && a.headerExtend.length === 0 &&
+    a.rows[0].join('\u0001') === row.join('\u0001'),
+    'cells=' + a.rows[0].length);
+}
+
+/* 68) خطة الترحيل: صفوف مطابقة للأرشيف + sourceRows بتنسيق الردود للتراجع */
+{
+  const wkP = U.parseWeekLabel('4/10-10/10');
+  const recP = {
+    supervisor: master[0].name, supervisorNorm: master[0].nameNorm, weekStart: wkP.start,
+    type: 'تخطيط', timestamp: '05/10/2026 09:00:00',
+    days: [{ school: 'أ', activity: 'ب' }, { school: '', activity: '' }, { school: '', activity: '' },
+      { school: '', activity: '' }, { school: '', activity: '' }, { school: '', activity: '' }],
+    notes: '', code: 'K9', source: 'programs',
+  };
+  const pl = MS.planMigration({ archive: admin.records, archiveHeader: admin.header, records: [recP], week: wkP, data: null });
+  ok('68. الخطة: صفوف الأرشيف بالترويسة الاسمية + sourceRows برموز للاستعادة',
+    pl.headerAligned === true && pl.rows.length === 1 &&
+    pl.rows[0][0] === master[0].name && pl.rows[0][14] === 'تخطيط' &&
+    pl.sourceRows[0][0] === '05/10/2026 09:00:00' && pl.sourceRows[0][1] === master[0].name &&
+    pl.sourceRows[0].length === 17 && pl.headerExtend.includes('Timestamp'),
+    'aligned=' + pl.rows[0].length + ' source=' + pl.sourceRows[0].length);
+}
+
+/* 69) قراءة الأرشيف: الترويسة تُحفظ + الكود والطابع في الصف الاسمي الجديد */
+{
+  const nameFirst = ['زائر تجريبي', 'م1', 'ف1', '', '', '', '', '', '', '', '', '', '', 'ملاحظة', 'تخطيط', 'CODE-1', '05/10/2026 09:00:00'];
+  const p3 = M.parseAdminCsv(U.csvSerialize([admin.header, nameFirst]));
+  const r3 = (p3.records || []).find((r) => r.supervisor === 'زائر تجريبي');
+  ok('69. قراءة الأرشيف: ترويسة محفوظة + الكود في الصف الاسمي',
+    Array.isArray(p3.header) && p3.header.length === admin.header.length &&
+    !!r3 && r3.code === 'CODE-1' && r3.type === 'تخطيط',
+    r3 ? 'code=' + r3.code + ' type=' + r3.type : 'غير موجود');
+}
+
+/* 70) خدمة تحديث ترويسة الأسبوع: حمولة صحيحة + نجاح + فشل صريح */
+{
+  const noUrl = await SS.updateHeaderWeek({ oldLabel: '4/10-10/10', newLabel: '11/10-17/10', appsScriptUrl: '' });
+  const bad = await SS.updateHeaderWeek({ oldLabel: '4/10-10/10', newLabel: '4/10-10/10', appsScriptUrl: 'https://x/exec' });
+  const orig = globalThis.fetch;
+  let sent = null;
+  let okRes = null;
+  let failRes = null;
+  globalThis.fetch = async (url, opts) => {
+    sent = JSON.parse(opts.body);
+    return { ok: true, json: async () => ({ ok: true, updated: 6, verified: true }) };
+  };
+  try {
+    okRes = await SS.updateHeaderWeek({ oldLabel: '4/10-10/10', newLabel: '11/10-17/10', appsScriptUrl: 'https://x/exec' });
+    globalThis.fetch = async (url, opts) => ({
+      ok: true,
+      json: async () => ({ ok: false, code: 'LABEL_NOT_FOUND', error: 'لم يُعثر على التسمية' }),
+    });
+    failRes = await SS.updateHeaderWeek({ oldLabel: '4/10-10/10', newLabel: '11/10-17/10', appsScriptUrl: 'https://x/exec' });
+  } finally {
+    globalThis.fetch = orig;
+  }
+  ok('70. updateHeaderWeek: رفض بلا رابط/تسمية + حمولة + نجاح + فشل صريح',
+    noUrl.ok === false && noUrl.code === 'NOT_CONFIGURED' &&
+    bad.ok === false && bad.code === 'BAD_LABEL' &&
+    sent.action === 'setWeekHeader' && sent.sheetId === CFG.sheetIds.programs &&
+    sent.oldLabel === '4/10-10/10' && sent.newLabel === '11/10-17/10' &&
+    okRes.ok === true && okRes.updated === 6 &&
+    failRes.ok === false && failRes.code === 'LABEL_NOT_FOUND',
+    sent.action + ' ' + JSON.stringify({ noUrl: noUrl.code, bad: bad.code, fail: failRes.code }));
+}
+
+/* محاكاة خوادم Apps Script + ملفات CSV — لا تُمس الملفات الحقيقية */
+const buildMigrationScenario = () => {
+  const wk = U.parseWeekLabel('4/10-10/10');
+  const state = {
+    archiveCsv: U.csvSerialize([
+      admin.header,
+      ['هناء إسماعيل خليل الشريف', 'ق1', 'خ1', '', '', '', '', '', '', '', '', '', '', '', 'تخطيط'],
+      ['زائر قديم', 'ق2', 'خ2', '', '', '', '', '', '', '', '', '', '', '', 'فعلي'],
+    ]),
+    respCsv: U.csvSerialize([programs.header,
+      ['05/10/2026 09:00:00', master[0].name, 'أ1', 'ن1', 'أ2', 'ن2', 'أ3', 'ن3', 'أ4', 'ن4', 'أ5', 'ن5', 'أ6', 'ن6', 'م1', 'K1', 'تخطيط'],
+      ['05/10/2026 10:00:00', master[1].name, 'ب1', 'ف1', 'ب2', 'ف2', 'ب3', 'ف3', 'ب4', 'ف4', 'ب5', 'ف5', 'ب6', 'ف6', '', 'K2', 'فعلي'],
+      ['20/9/2026 11:00:00', master[2].name, 'ج1', 'خ1', '', '', '', '', '', '', '', '', '', 'أسبوع آخر', '', 'تخطيط'],
+    ]),
+    log: [],
+    failAppend: false,
+    failDelete: false,
+    failHeader: false,
+    deleteLimit: null,
+    appendPayload: null,
+    headerUpdate: null,
+  };
+  const matchCells = (cells, want) => {
+    const c0 = cells[0];
+    const c1 = cells[1];
+    if (!c0 || !c1) return null;
+    if (c0.toLowerCase() === 'timestamp' || c0 === CFG.magicHeader) return null;
+    if (/\d{1,2}\/\d{1,2}\s*-\s*\d{1,2}\/\d{1,2}/.test(c0) && !/^\d{1,2}\/\d{1,2}\/\d{4}/.test(c0)) return null;
+    let ts = '';
+    let name = '';
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(c0)) { ts = c0; name = c1; }
+    else {
+      name = c0;
+      for (let i = 1; i < cells.length; i++) {
+        if (/^\d{1,2}\/\d{1,2}\/\d{4}/.test(cells[i])) { ts = cells[i]; break; }
+      }
+    }
+    if (!ts) return null;
+    const k = ts + '\u0001' + U.normName(name);
+    if (want.has(k)) return k;
+    return null;
+  };
+  const mockFetch = async (url, opts) => {
+    const u = String(url);
+    if (opts && opts.method === 'POST') {
+      const p = JSON.parse(opts.body);
+      state.log.push(p.action);
+      if (p.action === 'append') {
+        if (state.failAppend) return { ok: false, status: 500, json: async () => ({ ok: false, code: 'SCRIPT_ERROR', error: 'فشل وهمي في الإضافة' }) };
+        state.appendPayload = p;
+        const out = [[CFG.magicHeader, p.weekLabel || '']].concat(p.rows);
+        const field = p.sheetId === CFG.sheetIds.programs ? 'respCsv' : 'archiveCsv';
+        state[field] = state[field] + '\r\n' + U.csvSerialize(out);
+        return { ok: true, json: async () => ({ ok: true, appended: p.rows.length, skipped: 0, headerWritten: false, headerPatched: (p.headerPatch || []).length, headerExtended: (p.headerExtend || []).length }) };
+      }
+      if (p.action === 'deleteRows') {
+        if (state.failDelete) throw new Error('NETWORK_FAKE');
+        const field = p.sheetId === CFG.sheetIds.admin ? 'archiveCsv' : 'respCsv';
+        const rows = U.csvParse(state[field]);
+        const want = new Map();
+        for (const t of p.rows) {
+          const k = String(t.t == null ? '' : t.t).trim() + '\u0001' + U.normName(t.s);
+          want.set(k, (want.get(k) || 0) + 1);
+        }
+        const limit = state.deleteLimit == null ? Infinity : state.deleteLimit;
+        const kept = [];
+        let deleted = 0;
+        for (const r of rows) {
+          const k = matchCells(r.map((c) => String(c == null ? '' : c).trim()), want);
+          if (k && want.get(k) > 0 && deleted < limit) {
+            want.set(k, want.get(k) - 1);
+            deleted++;
+            continue;
+          }
+          kept.push(r);
+        }
+        state[field] = U.csvSerialize(kept);
+        return { ok: true, json: async () => ({ ok: true, deleted, expected: p.rows.length }) };
+      }
+      if (p.action === 'setWeekHeader') {
+        if (state.failHeader) return { ok: true, json: async () => ({ ok: false, code: 'LABEL_NOT_FOUND', error: 'التسمية القديمة غير موجودة' }) };
+        const rows = U.csvParse(state.respCsv);
+        let updated = 0;
+        rows[0] = rows[0].map((c) => {
+          const s = String(c == null ? '' : c);
+          if (s.indexOf(p.newLabel) >= 0) return s;
+          if (s.indexOf(p.oldLabel) >= 0) { updated++; return s.split(p.oldLabel).join(p.newLabel); }
+          return s;
+        });
+        if (!updated) return { ok: true, json: async () => ({ ok: false, code: 'LABEL_NOT_FOUND', error: 'لم يُعثر على التسمية القديمة' }) };
+        state.respCsv = U.csvSerialize(rows);
+        state.headerUpdate = { oldLabel: p.oldLabel, newLabel: p.newLabel };
+        return { ok: true, json: async () => ({ ok: true, updated, verified: true }) };
+      }
+      return { ok: true, json: async () => ({ ok: false, error: 'action غير مدعوم' }) };
+    }
+    if (u.indexOf(CFG.sheetIds.admin) >= 0) { state.log.push('GET admin'); return { ok: true, text: async () => state.archiveCsv }; }
+    if (u.indexOf(CFG.sheetIds.programs) >= 0) { state.log.push('GET programs'); return { ok: true, text: async () => state.respCsv }; }
+    return { ok: true, text: async () => '' };
+  };
+  return { state, wk, mockFetch };
+};
+const runExec = (wk, url) => MS.executeMigration({
+  preview: { plan: { rows: [['x']] } },
+  week: wk,
+  data: { master },
+  appsScriptUrl: url || 'https://script.exec/t',
+  user: 'مدير',
+});
+const withMockOf = async (sc, fn) => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = sc.mockFetch;
+  try { return await fn(); } finally { globalThis.fetch = orig; }
+};
+
+/* 71) مسار النجاح الكامل: إضافة مطابقة ← تحقق ← حذف ← ترويسة أسبوع جديد ← بقاء غير المستهدف */
+{
+  const sc = buildMigrationScenario();
+  const res = await withMockOf(sc, () => runExec(sc.wk));
+  const progAfter = M.parseProgramsCsv(sc.state.respCsv);
+  const adminAfter = M.parseAdminCsv(sc.state.archiveCsv);
+  const headerNow = U.csvParse(sc.state.respCsv)[0] || [];
+  const log = sc.state.log;
+  const othersWeek = progAfter.records.filter((r) => r.weekStart === '2026-09-20').length;
+  ok('71. نجاح كامل: أرشيف بالاسم ← تحقق ← حذف ← ترويسة 11/10-17/10 + بقاء غير المستهدف',
+    res.ok === true && res.deleteOk === true && res.headerWeekUpdated === true &&
+    res.appended === 2 && res.verify.found === 2 && res.verify.expected === 2 &&
+    res.deleted === 2 && res.othersLost === 0 &&
+    res.entry.status === 'مكتمل' && !res.entry.pendingHeaderWeek && !res.entry.pendingDelete &&
+    res.entry.headerSnapshot.length === programs.header.length &&
+    res.entry.startedTs > 0 && res.entry.finishedTs >= res.entry.startedTs &&
+    log.indexOf('append') < log.indexOf('deleteRows') &&
+    log.indexOf('deleteRows') < log.indexOf('setWeekHeader') &&
+    headerNow.some((c) => c.includes('11/10-17/10')) && !headerNow.some((c) => c.includes('4/10-10/10')) &&
+    progAfter.records.filter((r) => r.weekStart === '2026-10-04').length === 0 &&
+    othersWeek === 1 &&
+    adminAfter.records.filter((r) => r.weekStart === '2026-10-04').length === 2 &&
+    MS.verifyKeysInArchive(res.entry, adminAfter.records).ok === true &&
+    sc.state.appendPayload.headerPatch[0].col === 16 &&
+    sc.state.appendPayload.headerExtend.includes('Timestamp') &&
+    sc.state.appendPayload.rows[0][0] === master[0].name,
+    'log=' + log.join('>') + ' · أرشيف=' + adminAfter.records.filter((r) => r.weekStart === '2026-10-04').length);
+}
+
+/* 72) فشل الإضافة إلى الأرشيف → لا حذف ولا تحديث ترويسة إطلاقاً */
+{
+  const sc = buildMigrationScenario();
+  sc.state.failAppend = true;
+  const before = sc.state.respCsv;
+  const res = await withMockOf(sc, () => runExec(sc.wk));
+  ok('72. فشل الكتابة في الأرشيف → الردود لم تُمس (لا حذف ولا ترويسة)',
+    res.ok === false && res.code === 'SCRIPT_ERROR' && res.deleteAttempted === false &&
+    !sc.state.log.includes('deleteRows') && !sc.state.log.includes('setWeekHeader') &&
+    sc.state.respCsv === before &&
+    U.csvParse(sc.state.respCsv).length === 4 &&
+    (U.csvParse(sc.state.respCsv)[0] || []).some((c) => c.includes('4/10-10/10')),
+    'log=' + sc.state.log.join('>'));
+}
+
+/* 73) انقطاع بعد الإضافة قبل الحذف ثم إعادة المحاولة — بلا تكرار في الأرشيف */
+{
+  const sc = buildMigrationScenario();
+  sc.state.failDelete = true;
+  let first = null;
+  let retry = null;
+  let logAfterFirst = null;
+  await withMockOf(sc, async () => {
+    first = await runExec(sc.wk);
+    logAfterFirst = sc.state.log.slice();
+    sc.state.failDelete = false;
+    retry = await MS.retryDelete(first.entry, 'https://script.exec/t');
+  });
+  const adminAfter = M.parseAdminCsv(sc.state.archiveCsv);
+  const progAfter = M.parseProgramsCsv(sc.state.respCsv);
+  const entryNow = MS.migrationList().find((e) => e.id === first.entry.id);
+  ok('73. انقطاع بعد الإضافة/قبل الحذف ← بلا ترويسة ← إعادة محاولة تكمل الحذف والترويسة بلا تكرار',
+    first.ok === true && first.partialDelete === true && first.deleteOk === false &&
+    first.entry.status === 'جزئي' && first.entry.pendingDelete.length === 2 &&
+    first.headerWeekUpdated === false && !!first.entry.pendingHeaderWeek &&
+    !logAfterFirst.includes('setWeekHeader') &&
+    retry.ok === true && retry.headerWeekUpdated === true &&
+    entryNow.status === 'مكتمل' && !entryNow.pendingDelete && !entryNow.pendingHeaderWeek &&
+    entryNow.headerWeekUpdated === true &&
+    sc.state.log.filter((x) => x === 'append').length === 1 &&
+    adminAfter.records.filter((r) => r.weekStart === '2026-10-04').length === 2 &&
+    progAfter.records.filter((r) => r.weekStart === '2026-10-04').length === 0 &&
+    (U.csvParse(sc.state.respCsv)[0] || []).some((c) => c.includes('11/10-17/10')),
+    'log=' + sc.state.log.join('>') + ' · حالة=' + entryNow.status);
+}
+
+/* 74) الحذف ناجح وتحديث الترويسة يفشل → حالة صادقة + إعادة محاولة مستقلة */
+{
+  const sc = buildMigrationScenario();
+  sc.state.failHeader = true;
+  let first = null;
+  let retry = null;
+  await withMockOf(sc, async () => {
+    first = await runExec(sc.wk);
+    sc.state.failHeader = false;
+    retry = await MS.retryHeaderWeek(first.entry, 'https://script.exec/t');
+  });
+  const entryNow = MS.migrationList().find((e) => e.id === first.entry.id);
+  ok('74. حذف ناجح + فشل ترويسة الأسبوع الجديد = جزئي + إعادة محاولة تكملها',
+    first.ok === true && first.deleteOk === true &&
+    first.headerWeekUpdated === false && first.headerUpdateError === 'LABEL_NOT_FOUND' &&
+    first.entry.status === 'جزئي' && !!first.entry.pendingHeaderWeek &&
+    first.entry.headerWeekUpdated === false &&
+    first.entry.pendingHeaderWeek.newLabel === WK.nextWeek(sc.wk).label &&
+    retry.ok === true &&
+    entryNow.status === 'مكتمل' && entryNow.headerWeekUpdated === true && !entryNow.pendingHeaderWeek &&
+    (U.csvParse(sc.state.respCsv)[0] || []).some((c) => c.includes('11/10-17/10')),
+    'first=' + first.headerUpdateError + ' · retry=' + retry.ok + ' · ' + entryNow.status);
+}
+
+/* 75) حذف جزئي من الخادم → لا ترويسة أسبوع جديد قبل اكتمال الحذف */
+{
+  const sc = buildMigrationScenario();
+  sc.state.deleteLimit = 1;
+  const res = await withMockOf(sc, () => runExec(sc.wk));
+  ok('75. حذف جزئي (1 من 2) → بلا ترويسة أسبوع جديد + الحالة جزئي + إعادة المحاولة محفوظة',
+    res.ok === true && res.deleteOk === false && res.deleted === 1 && res.remaining === 1 &&
+    res.headerWeekUpdated === false && !sc.state.log.includes('setWeekHeader') &&
+    res.entry.status === 'جزئي' && res.entry.pendingDelete.length === 2 &&
+    !!res.entry.pendingHeaderWeek &&
+    M.parseProgramsCsv(sc.state.respCsv).records.filter((r) => r.weekStart === '2026-10-04').length === 1,
+    'deleted=' + res.deleted + ' remaining=' + res.remaining);
+}
+
+/* 76) أثر تحديث الترويسة على إسناد ردود الأسبوع الجديد (سبب الخلل الأصلي) */
+{
+  const hdrNew = programs.header.map((c) => String(c).split('4/10-10/10').join('11/10-17/10'));
+  const rowNew = ['11/10/2026 09:00:00', 'مشرف جديد', 'أ1', 'ن1', '', '', '', '', '', '', '', '', '', '', '', '', 'تخطيط'];
+  const pNew = M.parseProgramsCsv(U.csvSerialize([hdrNew, rowNew]));
+  const pOld = M.parseProgramsCsv(U.csvSerialize([programs.header, rowNew]));
+  ok('76. بترويسة محدَّثة تُسنَد ردود الأسبوع الجديد لها — وبترويسة قديمة تُسنَد خطأً للسابق',
+    pNew.headerWeek && pNew.headerWeek.start === '2026-10-11' &&
+    pNew.records.length === 1 && pNew.records[0].weekStart === '2026-10-11' &&
+    pOld.records.length === 1 && pOld.records[0].weekStart === '2026-10-04',
+    'جديد=' + (pNew.records[0] || {}).weekStart + ' · قديم=' + (pOld.records[0] || {}).weekStart);
+}
+
+/* 77) التراجع الكامل: استرجاع ← حذف من الأرشيف ← إرجاع ترويسة الأسبوع */
+{
+  const sc = buildMigrationScenario();
+  let run = null;
+  let undo = null;
+  await withMockOf(sc, async () => {
+    run = await runExec(sc.wk);
+    U.storeSet(CFG.storage.migrations, [run.entry]);
+    undo = await MS.executeUndo({ entry: MS.lastUndoableEntry(), appsScriptUrl: 'https://script.exec/t', user: 'مدير' });
+  });
+  const adminAfter = M.parseAdminCsv(sc.state.archiveCsv);
+  const progAfter = M.parseProgramsCsv(sc.state.respCsv);
+  const headerNow = U.csvParse(sc.state.respCsv)[0] || [];
+  const entryNow = MS.migrationList()[0];
+  ok('77. التراجع: استرجاع السجلات + حذفها من الأرشيف + إرجاع ترويسة الأسبوع',
+    run.ok === true && run.headerWeekUpdated === true &&
+    undo.ok === true && undo.headerReverted === true &&
+    undo.restored === 2 && undo.deleted === 2 &&
+    entryNow.status === 'REVERSED' && entryNow.headerReverted === true &&
+    MS.verifyKeysInArchive(run.entry, adminAfter.records).ok === false &&
+    adminAfter.records.filter((r) => r.weekStart === '2026-10-04').length === 0 &&
+    progAfter.records.filter((r) => r.weekStart === '2026-10-04').length === 2 &&
+    progAfter.records.filter((r) => r.weekStart === '2026-09-20').length === 1 &&
+    headerNow.some((c) => c.includes('4/10-10/10')) && !headerNow.some((c) => c.includes('11/10-17/10')),
+    'undo=' + undo.ok + ' headerReverted=' + undo.headerReverted + ' · ' + entryNow.status);
+}
+
 /* سجل العمليات + أدوات */
 LOG.logAdd('اختبار', 'سطر تجريبي');
 ok('bonus. سجل العمليات', LOG.logList().length >= 1);

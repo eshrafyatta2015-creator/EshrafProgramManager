@@ -1,14 +1,18 @@
 /**
- * EshrafProgramManager — AppendRows.gs (v3)
+ * EshrafProgramManager — AppendRows.gs (v4)
  * مسار الكتابة الوحيد للتطبيق:
- *   1) action 'append'      → إضافة صفوف بتنسيق ردود الاستمارة إلى الأرشيف النهائي
- *                             (ترويسة واحدة أعلى الملف فقط إذا كان فارغاً — لا ترويسة لكل أسبوع،
- *                             وسطر وسم قسم (MAGIC_HEADER + تسمية الأسبوع) قبل كل دفعة ليُسند
- *                             الصفوف لأسبوعها حتى إن كانت طوابعها الزمنية أقدم من بدايته —
- *                             ومنع تكرار بمفتاح: الأسبوع + اسم المشرف + النوع + الأيام).
- *   2) action 'deleteRows'  → حذف صفوف محددة تحديداً من ملف الردود — لا يُستدعى إلا بعد
- *                             تحقق التطبيق من وصول الصفوف للأرشيف. لا يُحذف صف 1 (الترويسة)
- *                             ولا أي صف غير مدرَج في القائمة.
+ *   1) action 'append'        → إضافة صفوف إلى الأرشيف النهائي بمطابقة أسماء أعمدة الترويسة
+ *                               (ترويسة واحدة أعلى الملف فقط إذا كان فارغاً — لا ترويسة لكل أسبوع،
+ *                               وعمود ناقص يُضاف في خلية ترويسة فارغة أو نهاية الترويسة — لا تغيير
+ *                               للبيانات التاريخية، وسطر وسم قسم (MAGIC_HEADER + تسمية الأسبوع) قبل
+ *                               كل دفعة — ومنع تكرار بمفتاح: الأسبوع + اسم المشرف + النوع + الأيام).
+ *   2) action 'deleteRows'    → حذف صفوف محددة تحديداً من ملف الردود — لا يُستدعى إلا بعد
+ *                               تحقق التطبيق من وصول الصفوف للأرشيف. لا يُحذف صف 1 (الترويسة)
+ *                               ولا أي صف غير مدرَج في القائمة. يطابق بالصيغتين (timestamp أولاً
+ *                               أو الاسم أولاً مع طابع زمني في أي عمود).
+ *   3) action 'setWeekHeader' → تحديث تسمية الأسبوع في صف الترويسة (صف 1) فقط — تجهيز الاستمارة
+ *                               للأسبوع الجديد بعد نجاح الترحيل والحذف. لا يُمس أي صف بيانات
+ *                               ولا تُنشأ ترويسة متكررة، مع قراءة تحقق بعد الكتابة.
  *
  * طريقة النشر:
  * 1) افتح جدول الأرشيف: https://docs.google.com/spreadsheets/d/1rthlmaZES8c95kUI6ErfD4YgiymWq4RoKXNXqgoBPnI/edit
@@ -33,6 +37,7 @@ function doPost(e) {
     var payload = JSON.parse(e.postData.contents);
     if (payload.action === 'append') return append_(payload);
     if (payload.action === 'deleteRows') return deleteRows_(payload);
+    if (payload.action === 'setWeekHeader') return setWeekHeader_(payload);
     return json_({ ok: false, error: 'action غير مدعوم' });
   } catch (err) {
     return json_({ ok: false, error: String(err) });
@@ -55,7 +60,40 @@ function append_(payload) {
     lastRow = 1;
   }
 
-  if (!rows.length) return json_({ ok: true, appended: 0, skipped: 0, headerWritten: headerWritten });
+  /* المطابقة بالاسم: إن أرسل التطبيق خلايا الترويسة التي راجعها فعلياً — يجب أن تطابق صف 1
+     الحالي حرفياً، وإلا نتوقف قبل أي كتابة (ترحيل آمن: الحذف لن يجري أصلاً). */
+  var headerPatched = 0;
+  var headerExtended = 0;
+  if (payload.headerCells && payload.headerCells.length) {
+    var hLastCol = sh.getLastColumn();
+    var actual = hLastCol > 0 ? sh.getRange(1, 1, 1, hLastCol).getValues()[0] : [];
+    if (!headerMatches_(actual, payload.headerCells)) {
+      return json_({ ok: false, code: 'HEADER_MISMATCH', error: 'تغيّرت ترويسة الهدف منذ قراءتها — أعد المعاينة.' });
+    }
+    if (payload.headerPatch && payload.headerPatch.length) {
+      for (var p = 0; p < payload.headerPatch.length; p++) {
+        var col = payload.headerPatch[p].col | 0;
+        var nm = String(payload.headerPatch[p].name || '');
+        if (col < 1 || !nm) continue;
+        var cur = col <= sh.getLastColumn() ? String(sh.getRange(1, col).getValue() == null ? '' : sh.getRange(1, col).getValue()).trim() : '';
+        if (cur && cur !== nm) return json_({ ok: false, code: 'HEADER_MISMATCH', error: 'خلية ترويسة مشغولة: ' + cur });
+        if (!cur) { sh.getRange(1, col).setValue(nm); headerPatched++; }
+      }
+    }
+    if (payload.headerExtend && payload.headerExtend.length) {
+      var base = payload.headerCells.length;
+      for (var x = 0; x < payload.headerExtend.length; x++) {
+        var nameX = String(payload.headerExtend[x] || '');
+        if (!nameX) continue;
+        var colX = base + 1 + x;
+        var curX = colX <= sh.getLastColumn() ? String(sh.getRange(1, colX).getValue() == null ? '' : sh.getRange(1, colX).getValue()).trim() : '';
+        if (curX && curX !== nameX) return json_({ ok: false, code: 'HEADER_MISMATCH', error: 'عمود ترويسة ممتد مشغول: ' + curX });
+        if (!curX) { sh.getRange(1, colX).setValue(nameX); headerExtended++; }
+      }
+    }
+  }
+
+  if (!rows.length) return json_({ ok: true, appended: 0, skipped: 0, headerWritten: headerWritten, headerPatched: headerPatched, headerExtended: headerExtended });
 
   var lastCol = Math.max(sh.getLastColumn(), 17);
   var all = lastRow > 0 ? sh.getRange(1, 1, lastRow, lastCol).getValues() : [];
@@ -88,7 +126,18 @@ function append_(payload) {
     sh.getRange(startRow, 1, outRows.length, cols).setValues(outRows);
   }
 
-  return json_({ ok: true, appended: toAppend.length, skipped: skipped, headerWritten: headerWritten });
+  return json_({ ok: true, appended: toAppend.length, skipped: skipped, headerWritten: headerWritten, headerPatched: headerPatched, headerExtended: headerExtended });
+}
+
+/* مطابقة خلايا صف 1 الحالي مع الخلايا التي راجعها التطبيق (الفارغة زائدة مسموحة) */
+function headerMatches_(actual, expected) {
+  var a = cells_(actual);
+  var b = cells_(expected);
+  var n = Math.min(a.length, b.length);
+  for (var i = 0; i < n; i++) if (a[i] !== b[i]) return false;
+  for (var j = n; j < a.length; j++) if (a[j]) return false;
+  for (var q = n; q < b.length; q++) if (b[q]) return false;
+  return true;
 }
 
 /* مفاتيح كل صفوف الورقة الحالية — يتتبع أسبوع كل قسم من رؤوس الأقسام القديمة */
@@ -220,13 +269,29 @@ function deleteRows_(payload) {
   }
 
   var rowNumbers = [];
-  /* نبدأ من الصف 2 — صف 1 (الترويسة) لا يُحذف أبداً، ولا أي صف غير مطابق للمواصفة */
+  /* نبدأ من الصف 2 — صف 1 (الترويسة) لا يُحذف أبداً، ولا أي صف غير مطابق للمواصفة.
+     مطابقة الصيغتين: timestamp أولاً (ردود الاستمارة) أو الاسم أولاً مع طابع زمني في أي عمود
+     (صفوف الأرشيف المطابقة بالاسم) — الصف بلا طابع زمني لا يطابق أي هدف ولا يُحذف. */
   for (var r = 1; r < all.length; r++) {
-    var c0 = String(all[r][0] == null ? '' : all[r][0]).trim();
-    var c1 = String(all[r][1] == null ? '' : all[r][1]).trim();
+    var cells = cells_(all[r]);
+    var c0 = cells[0];
+    var c1 = cells[1];
     if (!c0 || !c1) continue;
     if (c0.toLowerCase() === 'timestamp' || c0 === MAGIC_HEADER) continue;
-    var k2 = c0 + '\u0001' + norm_(c1);
+    if (WEEK_RE.test(c0) && !TS_RE.test(c0)) continue;
+    var ts = '';
+    var name = '';
+    if (TS_RE.test(c0)) {
+      ts = c0;
+      name = c1;
+    } else {
+      name = c0;
+      for (var q = 1; q < cells.length; q++) {
+        if (TS_RE.test(cells[q])) { ts = cells[q]; break; }
+      }
+    }
+    if (!ts) continue;
+    var k2 = ts + '\u0001' + norm_(name);
     if (want[k2] > 0) {
       rowNumbers.push(r + 1);
       want[k2]--;
@@ -243,10 +308,56 @@ function deleteRows_(payload) {
   return json_({ ok: true, deleted: deleted, expected: expected });
 }
 
+/* ---------------- تحديث تسمية الأسبوع في صف الترويسة (صف 1) فقط ----------------
+   تجهيز الاستمارة للأسبوع الجديد بعد نجاح الترحيل والحذف:
+   لا يُمس أي صف بيانات، ولا تُنشأ ترويسة متكررة، مع قراءة تحقق بعد الكتابة. */
+function setWeekHeader_(payload) {
+  var oldLabel = String(payload.oldLabel == null ? '' : payload.oldLabel).trim();
+  var newLabel = String(payload.newLabel == null ? '' : payload.newLabel).trim();
+  if (!oldLabel || !newLabel) return json_({ ok: false, code: 'BAD_LABEL', error: 'تسمية أسبوع ناقصة.' });
+  if (oldLabel === newLabel) return json_({ ok: true, updated: 0, already: true, verified: true });
+
+  var ss = SpreadsheetApp.openById(payload.sheetId || RESPONSES_SHEET_ID);
+  var sh = ss.getSheets()[0];
+  var lastCol = sh.getLastColumn();
+  if (lastCol < 1) return json_({ ok: false, code: 'EMPTY', error: 'لا توجد ترويسة للتحديث.' });
+
+  var row = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  var updated = 0;
+  var already = 0;
+  for (var i = 0; i < row.length; i++) {
+    var s = String(row[i] == null ? '' : row[i]);
+    if (s.indexOf(newLabel) >= 0) { already++; continue; }
+    if (s.indexOf(oldLabel) >= 0) {
+      row[i] = s.split(oldLabel).join(newLabel);
+      updated++;
+    }
+  }
+  if (!updated && !already) {
+    return json_({ ok: false, code: 'LABEL_NOT_FOUND', error: 'لم يُعثر على التسمية القديمة في صف الترويسة.' });
+  }
+  if (updated) sh.getRange(1, 1, 1, row.length).setValues([row]);
+
+  /* قراءة تحقق من الملف نفسه: لا نُبلِّغ نجاحاً إلا بتأكيد فعلي */
+  var back = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var sawNew = false;
+  for (var j = 0; j < back.length; j++) {
+    var b = String(back[j] == null ? '' : back[j]);
+    if (b.indexOf(oldLabel) >= 0) {
+      return json_({ ok: false, code: 'VERIFY_FAILED', error: 'التسمية القديمة ما زالت موجودة بعد الكتابة.', updated: updated });
+    }
+    if (b.indexOf(newLabel) >= 0) sawNew = true;
+  }
+  if (updated && !sawNew) {
+    return json_({ ok: false, code: 'VERIFY_FAILED', error: 'التسمية الجديدة غير موجودة بعد الكتابة.', updated: updated });
+  }
+  return json_({ ok: true, updated: updated, already: already > 0 && !updated, verified: true });
+}
+
 function json_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
 function doGet() {
-  return json_({ ok: true, service: 'EshrafProgramManager AppendRows v3', hint: 'استخدم POST: append | deleteRows' });
+  return json_({ ok: true, service: 'EshrafProgramManager AppendRows v4', hint: 'استخدم POST: append | deleteRows | setWeekHeader' });
 }

@@ -1,8 +1,10 @@
 /* MigrationService — خوارزمية الترحيل الآمن §38 كاملةً
    1) قراءة الردود  2) مطابقة بالاسم فقط  3) الترويسة  4) منع التكرار
-   5) إضافة الصفوف للأرشيف  6) إعادة قراءة الأرشيف والتحقق
+   5) إضافة الصفوف للأرشيف (مطابقة أعمدة الأرشيف بالاسم + أعمدة ناقصة)
+   6) إعادة قراءة الأرشيف والتحقق
    7) مقارنة عدد السجلات قبل/بعد  8) حذف الصفوف المرحّلة من الردود (فقط بعد التحقق)
-   9) التحقق من الحذف وسلامة الترويسة  10) تجهيز الأسبوع التالي (+7)
+   9) التحقق من الحذف وسلامة الترويسة وبقاء السجلات غير المستهدفة
+   10) تحديث ترويسة الردود إلى الأسبوع الجديد (صف الترويسة فقط)
    11) تسجيل العملية في سجل الترحيل
    قاعدة حاكمة: لا يُحذف أي صف من الردود قبل إثبات وصوله للأرشيف. */
 
@@ -11,8 +13,8 @@ import { normName, formatDateTime, uid, storeGet, storeSet } from '../utils.js';
 import { responsesOfWeek, splitByMaster, typeCounts } from './responsesService.js';
 import { dedupeAgainstExisting, recordKey } from './duplicateService.js';
 import { nextWeek } from './weekService.js';
-import { topHeaderRow, headerMapFor } from './headerService.js';
-import { appendData, deleteResponseRows, fetchArchiveCsv, fetchResponsesCsv } from './sheetsService.js';
+import { topHeaderRow, headerMapFor, alignRowsToHeader } from './headerService.js';
+import { appendData, deleteResponseRows, fetchArchiveCsv, fetchResponsesCsv, updateHeaderWeek } from './sheetsService.js';
 import { recordToResponsesRow } from './exportService.js';
 import { logAdd } from './logService.js';
 
@@ -27,18 +29,29 @@ export function weekExistsInArchive(data, weekStart) {
 }
 
 /* ---------- خطة الترحيل (منطق خالص) ----------
-   صفوف بتنسيق ردود الاستمارة تُضاف أسفل الأرشيف مباشرةً:
-   ترويسة واحدة أعلى الملف فقط إذا كان الملف فارغاً — لا ترويسة لكل أسبوع. */
-export function planMigration({ archive, records, week, data }) {
+   صفوف بتنسيق ردود الاستمارة تُطابق أولاً بأسماء أعمدة ترويسة الأرشيف الفعلية (خطوة 4-5):
+   الحقول في أعمدتها بسميتها لا بترتيبها، والعمود الناقص يُضاف في خلية ترويسة فارغة أو نهاية
+   الترويسة — دون مس البيانات التاريخية. ترويسة واحدة أعلى الملف فقط إذا كان الملف فارغاً. */
+export function planMigration({ archive, archiveHeader, records, week, data }) {
   const { keep, skipped } = dedupeAgainstExisting(archive || [], records || []);
   const headerNeeded = keep.length > 0 && !(archive || []).length;
-  const rows = keep.map(recordToResponsesRow);
+  const headerRow = headerNeeded ? topHeaderRow(data, week && week.label) : null;
+  const sourceRows = keep.map(recordToResponsesRow);
+  /* مصدر المطابقة: ترويسة الأرشيف الحية، وإلا الترويسة التي ستُكتب للملف الفارغ */
+  const baseHeader = (archiveHeader && archiveHeader.length) ? archiveHeader : headerRow;
+  const al = alignRowsToHeader(baseHeader || [], sourceRows);
   return {
-    rows,
+    rows: al.rows,
+    sourceRows,
     keep,
     skipped,
     headerNeeded,
-    headerRow: headerNeeded ? topHeaderRow(data, week && week.label) : null,
+    headerRow,
+    headerCells: al.headerCells,
+    headerOut: al.headerOut,
+    headerPatch: al.headerPatch,
+    headerExtend: al.headerExtend,
+    headerAligned: al.aligned,
   };
 }
 
@@ -51,7 +64,13 @@ export function buildMigratePreview(data, week, opts = {}) {
   const { kept, orphans } = splitByMaster(master, weekRecords);
   const toMigrate = includeOrphans ? kept.concat(orphans) : kept;
   const archive = archiveRecords(data);
-  const plan = planMigration({ archive, records: toMigrate, week, data });
+  const plan = planMigration({
+    archive,
+    archiveHeader: (data && data.admin && data.admin.header) || null,
+    records: toMigrate,
+    week,
+    data,
+  });
   const headerInfo = headerMapFor(data);
 
   const planningSenders = new Set();
@@ -126,7 +145,13 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
   const freshWeek = freshResponses.parsed.records.filter((r) => r.weekStart === wk.start);
   const { kept: freshKept, orphans: freshOrphans } = splitByMaster(master, freshWeek);
   const toMigrate = includeOrphans ? freshKept.concat(freshOrphans) : freshKept;
-  const plan = planMigration({ archive: freshArchive.records, records: toMigrate, week: wk, data });
+  const plan = planMigration({
+    archive: freshArchive.records,
+    archiveHeader: freshArchive.header || null,
+    records: toMigrate,
+    week: wk,
+    data,
+  });
 
   if (!plan.keep.length) {
     const already = freshArchive.records.some((r) => r.weekStart === wk.start);
@@ -141,12 +166,15 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
     ? ' · يتيمة غير مرحّلة=' + freshOrphans.length
     : (includeOrphans && freshOrphans.length ? ' · يتيمة (مع تأكيد)=' + freshOrphans.length : '');
 
-  /* المرحلة 5: الإضافة (الأرشيف فقط) */
+  /* المرحلة 5: الإضافة (الأرشيف فقط) — بالصفوف المطابقة أسماء أعمدة الترويسة */
   const written = await appendData({
     rows: plan.rows,
     markerRow: plan.keep[0].supervisor,
     weekLabel: wk.label,
     headerRow: plan.headerRow,
+    headerCells: plan.headerCells,
+    headerPatch: plan.headerPatch,
+    headerExtend: plan.headerExtend,
     appsScriptUrl,
   });
   if (!written.ok) {
@@ -198,6 +226,8 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
     .filter((r) => r.timestamp)
     .map((r) => ({ t: r.timestamp, s: r.supervisor }));
   const untargeted = plan.keep.length - delTargets.length;
+  const nk = nextWeek(wk);
+  const pendingHeaderWeek = nk ? { oldLabel: wk.label, newLabel: nk.label } : null;
 
   const del = await deleteResponseRows({ rows: delTargets, appsScriptUrl });
   if (!del.ok) {
@@ -206,6 +236,8 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
       deleted: 0, deleteExpected: delTargets.length,
       status: 'جزئي', pendingDelete: delTargets, untargeted,
       deleteTargets: delTargets,
+      started, headerSnapshot: freshResponses.parsed.header || [],
+      pendingHeaderWeek, headerWeekUpdated: false,
       detail: 'الحذف من الردود فشل: ' + (del.code || '') + ' ' + (del.error || ''),
     });
     logAdd('ترحيل الأسبوع', 'الأرشيف مكتمل لكن الحذف فشل ' + wk.label);
@@ -220,6 +252,8 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
       deleted: 0,
       deleteExpected: delTargets.length,
       pendingDelete: delTargets,
+      deleteOk: false,
+      headerWeekUpdated: false,
       entry,
       nextWeek: nextWeek(wk),
       ms: ms(),
@@ -229,7 +263,12 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
     };
   }
 
-  /* المرحلة 9: التحقق من الحذف وسلامة الترويسة في ملف الردود */
+  /* المرحلة 9: التحقق من الحذف وسلامة الترويسة وبقاء أي سجلات غير مستهدفة في الردود */
+  const targetKeys = new Set(delTargets.map((t) => t.t + '\u0001' + normName(t.s)));
+  const keyOfResp = (r) => (r.timestamp || '') + '\u0001' + (r.supervisorNorm || normName(r.supervisor));
+  const othersBefore = (freshResponses.parsed.records || [])
+    .filter((r) => !targetKeys.has(keyOfResp(r)))
+    .map(recordKey);
   let delVerify;
   try {
     const afterResp = await fetchResponsesCsv();
@@ -239,17 +278,28 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
       const tn = normName(t.s);
       if (live.some((r) => r.timestamp === t.t && (r.supervisorNorm || normName(r.supervisor)) === tn)) remaining++;
     }
+    const afterKeys = new Set(live.map(recordKey));
+    let othersLost = 0;
+    for (const k of othersBefore) if (!afterKeys.has(k)) othersLost++;
     const hdr = afterResp.parsed.header || [];
     const headerOk = hdr.length > 0 &&
       String(hdr[0] || '').toLowerCase().includes('timestamp') &&
       String(hdr[1] || '').includes('اسم المشرف');
-    delVerify = { ok: remaining === 0 && headerOk, remaining, headerOk };
+    delVerify = { ok: remaining === 0 && headerOk && othersLost === 0, remaining, headerOk, othersLost, othersBefore: othersBefore.length };
   } catch (e) {
-    delVerify = { ok: false, remaining: delTargets.length, headerOk: false, error: String((e && e.message) || e) };
+    delVerify = { ok: false, remaining: delTargets.length, headerOk: false, othersLost: -1, error: String((e && e.message) || e) };
   }
 
   const deleteOk = delVerify.ok;
-  const nk = nextWeek(wk);
+
+  /* المرحلة 10: تحديث ترويسة الردود إلى الأسبوع الجديد — صف الترويسة فقط، وبعد نجاح الحذف والتحقق */
+  let headerRes = null;
+  if (deleteOk && untargeted === 0 && nk) {
+    headerRes = await updateHeaderWeek({ oldLabel: wk.label, newLabel: nk.label, appsScriptUrl });
+  }
+  const headerWeekUpdated = !!(headerRes && headerRes.ok);
+  const headerPending = nk && !headerWeekUpdated;
+
   const entry = saveEntry({
     week: wk,
     plan,
@@ -258,18 +308,26 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
     user,
     deleted: delTargets.length - (delVerify.remaining || 0),
     deleteExpected: delTargets.length,
-    status: deleteOk && untargeted === 0 ? 'مكتمل' : 'جزئي',
+    status: deleteOk && untargeted === 0 && !headerPending ? 'مكتمل' : 'جزئي',
     pendingDelete: deleteOk ? null : delTargets,
     untargeted,
     deleteTargets: delTargets,
+    started,
+    headerSnapshot: freshResponses.parsed.header || [],
+    pendingHeaderWeek: headerPending && nk ? { oldLabel: wk.label, newLabel: nk.label } : null,
+    headerWeekUpdated,
     detail: deleteOk
-      ? 'تم الترحيل والحذف والتحقق'
-      : 'الحذف لم يكتمل: متبقي=' + (delVerify.remaining || 0) + ' ترويسة=' + (delVerify.headerOk ? 'سليمة' : 'ناقصة'),
+      ? (headerPending
+        ? 'تم الترحيل والحذف — تحديث ترويسة الأسبوع الجديد لم يكتمل: ' + ((headerRes && (headerRes.code || headerRes.error)) || '')
+        : 'تم الترحيل والحذف والتحقق' + (nk ? ' وتحديث ترويسة الأسبوع الجديد' : ''))
+      : 'الحذف لم يكتمل: متبقي=' + (delVerify.remaining || 0) + ' ترويسة=' + (delVerify.headerOk ? 'سليمة' : 'ناقصة') +
+        (delVerify.othersLost ? ' · سجلات أخرى مفقودة=' + delVerify.othersLost : ''),
   });
 
   logAdd('ترحيل الأسبوع', 'الأسبوع ' + wk.label +
     ' · أُضيف=' + written.appended + ' · تحقق=' + verify.found + '/' + verify.expected +
-    ' · محذوف=' + entry.deleted + '/' + deleteTargets.length +
+    ' · محذوف=' + entry.deleted + '/' + delTargets.length +
+    ' · ترويسة الأسبوع الجديد=' + (nk ? (headerWeekUpdated ? 'محدَّثة' : 'بانتظار التحديث') : 'لا حاجة') +
     ' · الحالة=' + entry.status + orphNote,
     { op: 'ترحيل', week: wk.label, count: written.appended, user: user || '—', status: entry.status });
 
@@ -278,13 +336,20 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
     appended: written.appended,
     skipped: written.skipped,
     headerWritten: !!written.headerWritten,
+    headerPatched: written.headerPatched | 0,
+    headerExtended: written.headerExtended | 0,
+    headerAligned: !!plan.headerAligned,
     verify,
     deleted: entry.deleted,
-    deleteExpected: deleteTargets.length,
+    deleteExpected: delTargets.length,
     deleteOk,
     headerPresent: delVerify.headerOk,
     remaining: delVerify.remaining || 0,
+    othersLost: delVerify.othersLost | 0,
     untargeted,
+    headerWeekUpdated,
+    headerWeek: nk ? { oldLabel: wk.label, newLabel: nk.label } : null,
+    headerUpdateError: headerRes && !headerRes.ok ? (headerRes.code || headerRes.error) : '',
     entry,
     nextWeek: nk,
     ms: ms(),
@@ -313,27 +378,65 @@ export async function retryDelete(entry, appsScriptUrl) {
     const hdr = after.parsed.header || [];
     const headerOk = hdr.length > 0 && String(hdr[0] || '').toLowerCase().includes('timestamp');
     const ok = remaining === 0 && headerOk;
+    /* اكتمل الحذف ← جرّب تجهيز ترويسة الأسبوع الجديد إن كانت بانتظاره */
+    let headerWeekUpdated = !!entry.headerWeekUpdated;
+    let headerResult = null;
+    if (ok && entry.pendingHeaderWeek) {
+      headerResult = await updateHeaderWeek({ ...entry.pendingHeaderWeek, appsScriptUrl });
+      headerWeekUpdated = !!(headerResult && headerResult.ok);
+    }
+    const headerPending = ok && !!entry.pendingHeaderWeek && !headerWeekUpdated;
     updateEntry(entry.id, {
       deleted: (entry.deleted || 0) + (entry.pendingDelete.length - remaining),
       pendingDelete: ok ? null : entry.pendingDelete,
-      status: ok ? 'مكتمل' : 'جزئي',
-      detail: ok ? 'أُكمل الحذف بإعادة المحاولة' : 'إعادة المحاولة: متبقي=' + remaining,
+      status: ok && !headerPending ? 'مكتمل' : 'جزئي',
+      pendingHeaderWeek: ok ? (headerPending ? entry.pendingHeaderWeek : null) : entry.pendingHeaderWeek,
+      headerWeekUpdated,
+      detail: ok
+        ? (headerPending
+          ? 'أُكمل الحذف — تحديث ترويسة الأسبوع الجديد لم يكتمل: ' + ((headerResult && (headerResult.code || headerResult.error)) || '')
+          : 'أُكمل الحذف بإعادة المحاولة' + (entry.pendingHeaderWeek ? ' مع تجهيز ترويسة الأسبوع الجديد' : ''))
+        : 'إعادة المحاولة: متبقي=' + remaining,
     });
-    logAdd('ترحيل الأسبوع', 'إعادة محاولة الحذف: ' + (ok ? 'اكتمل' : 'متبقي=' + remaining));
-    return { ok, remaining, headerOk, deleted: entry.pendingDelete.length - remaining };
+    logAdd('ترحيل الأسبوع', 'إعادة محاولة الحذف: ' + (ok ? 'اكتمل' : 'متبقي=' + remaining) +
+      (headerPending ? ' · الترويسة بانتظار التحديث' : (headerWeekUpdated && entry.pendingHeaderWeek ? ' · حدُّثت ترويسة الأسبوع الجديد' : '')));
+    return { ok, remaining, headerOk, deleted: entry.pendingDelete.length - remaining, headerWeekUpdated, headerPending };
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
 }
 
+/* إعادة محاولة تجهيز ترويسة الأسبوع الجديد وحده (عند فشلها بعد نجاح الترحيل) */
+export async function retryHeaderWeek(entry, appsScriptUrl) {
+  if (!entry || !entry.pendingHeaderWeek) return { ok: true, nothing: true };
+  const ph = entry.pendingHeaderWeek;
+  const r = await updateHeaderWeek({ oldLabel: ph.oldLabel, newLabel: ph.newLabel, appsScriptUrl });
+  if (r.ok) {
+    const stillPendingDelete = !!(entry.pendingDelete && entry.pendingDelete.length);
+    updateEntry(entry.id, {
+      headerWeekUpdated: true,
+      pendingHeaderWeek: null,
+      status: stillPendingDelete ? entry.status : 'مكتمل',
+      detail: 'تم تجهيز ترويسة الأسبوع الجديد (' + ph.newLabel + ') بإعادة المحاولة',
+    });
+    logAdd('ترحيل الأسبوع', 'إعادة محاولة ترويسة الأسبوع الجديد: تم التحديث إلى ' + ph.newLabel);
+  } else {
+    logAdd('ترحيل الأسبوع', 'إعادة محاولة ترويسة الأسبوع الجديد فشلت: ' + (r.code || '') + ' ' + (r.error || ''));
+  }
+  return r;
+}
+
 /* ---------- سجل الترحيل المهيكل (§29) ---------- */
 
-function saveEntry({ week, plan, written, verify, user, deleted, deleteExpected, status, pendingDelete, untargeted, detail, deleteTargets }) {
+function saveEntry({ week, plan, written, verify, user, deleted, deleteExpected, status, pendingDelete, untargeted, detail, deleteTargets, started, headerSnapshot, pendingHeaderWeek, headerWeekUpdated }) {
   const list = storeGet(CFG.storage.migrations, []);
   const entry = {
     id: uid(),
     opNo: list.length + 1,
     ts: Date.now(),
+    startedTs: started || Date.now(),
+    finishedTs: Date.now(),
+    durationMs: started ? Date.now() - started : 0,
     time: formatDateTime(new Date()),
     weekStart: week.start,
     weekEnd: week.end || '',
@@ -352,10 +455,15 @@ function saveEntry({ week, plan, written, verify, user, deleted, deleteExpected,
     user: user || '—',
     nextWeekLabel: '',
     pendingDelete: pendingDelete && pendingDelete.length ? pendingDelete : null,
+    /* ترويسة ملف الردود وقت العملية — نسخة احتياطية للاستعادة إن لزم */
+    headerSnapshot: (headerSnapshot || []).slice(),
+    /* تجهيز ترويسة الأسبوع الجديد: معلّق إلى أن ينجح التحديث فعلياً */
+    pendingHeaderWeek: pendingHeaderWeek || null,
+    headerWeekUpdated: !!headerWeekUpdated,
     detail: detail || '',
     /* معرّفات وصفوف العملية نفسها — أساس التراجع الآمن (§8): لا حذف عشوائي */
     migratedKeys: plan.keep.map(recordKey),
-    migratedRows: plan.rows.slice(),
+    migratedRows: (plan.sourceRows || plan.rows).slice(),
     deleteTargets: (deleteTargets || []).map((t) => ({ t: t.t, s: t.s })),
   };
   const nk = nextWeek(week);
@@ -539,12 +647,23 @@ export async function executeUndo({ entry, appsScriptUrl, user }) {
     return { ok: false, code: 'ARCHIVE_VERIFY_FAILED', error: CFG.texts.undoAbort, verify: delCheck, restored: true, ms: ms() };
   }
 
+  /* (5-ب) إن كان الترحيل قد حدّث ترويسة الردود إلى الأسبوع الجديد — أعِدها إلى أسبوعها */
+  let headerReverted = null;
+  if (target.headerWeekUpdated && target.nextWeekLabel && target.weekLabel) {
+    const hr = await updateHeaderWeek({ oldLabel: target.nextWeekLabel, newLabel: target.weekLabel, appsScriptUrl });
+    headerReverted = !!hr.ok;
+    if (!hr.ok) logAdd('تراجع عن ترحيل', 'تعذّر إرجاع ترويسة الردود إلى ' + target.weekLabel + ': ' + (hr.code || ''));
+  }
+
   /* (6) تحديث سجل العملية إلى REVERSED — السجل نفسه لا يُحذف */
   const updated = updateEntry(target.id, {
     status: 'REVERSED',
     reversedAt: formatDateTime(new Date()),
     reversedBy: user || '—',
-    undoDetail: 'استُرجع ' + target.migratedKeys.length + ' سجل إلى الردود وحُذفت من الأرشيف',
+    headerReverted,
+    undoDetail: 'استُرجع ' + target.migratedKeys.length + ' سجل إلى الردود وحُذفت من الأرشيف' +
+      (headerReverted === true ? ' وعُدّت ترويسة الردود إلى ' + target.weekLabel
+        : headerReverted === false ? ' — تعذّر إرجاع ترويسة الردود' : ''),
   });
   logAdd('تراجع عن ترحيل',
     'الأسبوع ' + target.weekLabel + ' · استُرجع=' + target.migratedKeys.length +
@@ -558,6 +677,7 @@ export async function executeUndo({ entry, appsScriptUrl, user }) {
     restored: restore.appended,
     restoredSkipped: restore.skipped || 0,
     deleted: del.deleted,
+    headerReverted,
     weekLabel: target.weekLabel,
     weekStart: target.weekStart,
     ms: ms(),

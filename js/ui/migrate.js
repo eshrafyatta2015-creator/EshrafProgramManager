@@ -7,7 +7,7 @@ import { escapeHtml, ltr } from '../utils.js';
 import { tableHtml, toast, showModal, emptyState, statCard, htmlCell } from './components.js';
 import {
   buildMigratePreview, executeMigration, migrationHistoryRows, migrationList,
-  pendingDeleteEntry, retryDelete,
+  pendingDeleteEntry, retryDelete, retryHeaderWeek,
   lastUndoableEntry, undoBlockReason, executeUndo, weekBeforeEntry,
 } from '../services/migrationService.js';
 import { flattenDetail } from '../services/reportService.js';
@@ -49,7 +49,8 @@ function previewHtml(p) {
       : '') +
     '<div class="card"><ul class="export-summary">' +
       '<li>الأسبوع الحالي: <b>' + escapeHtml(p.week.label) + '</b> (' + ltr(p.week.start + ' → ' + p.week.end) + ')</li>' +
-      (nk ? '<li>الأسبوع التالي: <b>' + escapeHtml(nk.label) + '</b> (' + ltr(nk.start + ' → ' + nk.end) + ') — '+ CFG.texts.nextWeekReady + '</li>' : '') +
+      (nk ? '<li>الأسبوع التالي: <b>' + escapeHtml(nk.label) + '</b> (' + ltr(nk.start + ' → ' + nk.end) + ') — '+ CFG.texts.nextWeekReady +
+        ' · <b>' + CFG.texts.headerWeekLabel + ' ' + escapeHtml(nk.label) + '</b> (يتم بعد الحذف الناجح — صف الترويسة فقط)</li>' : '') +
       '<li>الوجهة: إضافة إلى جدول الأرشيف النهائي <code>' + ltr('1rthlma…') + '</code> ثم <b>الحذف من الردود بعد التحقق فقط</b></li>' +
       '<li>ترويسة رأس الملف (Header): ' +
         (p.headerNeeded ? '<b>تُكتب الآن</b> (الملف فارغ — ترويسة واحدة أعلى الملف، لا ترويسة لكل أسبوع)'
@@ -76,8 +77,12 @@ function historyHtml() {
   return tableHtml(['#', 'الوقت', 'الأسبوع', 'السجلات', 'المحذوف من الردود', 'الحالة', 'المستخدم'],
     entries.map((e) => {
       const id = e.opNo ? '#' + e.opNo : String(e.id || '').slice(0, 6);
-      const status = e.pendingDelete && e.pendingDelete.length
-        ? htmlCell('<b>' + escapeHtml(e.status) + '</b> <button class="btn btn-sm" data-retry="' + escapeHtml(e.id) + '">🔁 إعادة محاولة الحذف</button>')
+      const retryDel = e.pendingDelete && e.pendingDelete.length
+        ? ' <button class="btn btn-sm" data-retry="' + escapeHtml(e.id) + '">🔁 إعادة محاولة الحذف</button>' : '';
+      const retryHdr = e.pendingHeaderWeek
+        ? ' <button class="btn btn-sm" data-retryheader="' + escapeHtml(e.id) + '">' + CFG.texts.headerWeekRetry + '</button>' : '';
+      const status = (retryDel || retryHdr)
+        ? htmlCell('<b>' + escapeHtml(e.status) + '</b>' + retryDel + retryHdr)
         : (e.status === 'REVERSED'
           ? htmlCell('<span class="pill mini">↩ ' + escapeHtml(e.status) + '</span>')
           : escapeHtml(e.status));
@@ -131,6 +136,7 @@ export function render(root, app) {
 
 function bindHistory(root, app) {
   root.querySelectorAll('[data-retry]').forEach((b) => b.addEventListener('click', () => doRetry(b.dataset.retry, app)));
+  root.querySelectorAll('[data-retryheader]').forEach((b) => b.addEventListener('click', () => doRetryHeader(b.dataset.retryheader, app)));
   const open = root.querySelector('#m-history-open');
   if (open) open.addEventListener('click', () => showHistoryModal());
 }
@@ -179,7 +185,8 @@ function doRun(app) {
     title: 'تأكيد ترحيل بيانات الأسبوع',
     body: '<ul class="export-summary">' +
       '<li>الأسبوع: <b>' + escapeHtml(p.week.label) + '</b> — من <b>' + ltr(p.week.start) + '</b> إلى <b>' + ltr(p.week.end) + '</b></li>' +
-      (nk ? '<li>الأسبوع التالي بعد الترحيل: <b>' + escapeHtml(nk.label) + '</b> (' + ltr(nk.start + ' → ' + nk.end) + ') — '+ CFG.texts.nextWeekReady + '</li>' : '') +
+      (nk ? '<li>الأسبوع التالي بعد الترحيل: <b>' + escapeHtml(nk.label) + '</b> (' + ltr(nk.start + ' → ' + nk.end) + ') — '+ CFG.texts.nextWeekReady +
+        ' · <b>' + CFG.texts.headerWeekLabel + ' ' + escapeHtml(nk.label) + '</b> (بعد الحذف الناجح)</li>' : '') +
       '<li>عدد المشرفين في البيانات الأساسية: <b>' + ltr(String(p.masterCount)) + '</b></li>' +
       '<li>عدد السجلات الجديدة التي ستُضاف: <b class="t-green">' + ltr(String(p.kept)) + '</b></li>' +
       '<li>سجلات مكررة ستُتخطى: <b>' + ltr(String(p.skipped)) + '</b></li>' +
@@ -271,24 +278,34 @@ async function runMigration(app) {
       return true;
     }
 
-    /* نجاح (كلي أو جزئي في الحذف) */
+    /* نجاح (كلي أو جزئي في الحذف/التحديث) */
     const orphNote = preview.orphans.length && !preview.includeOrphans
       ? '<p class="t-red">' + CFG.texts.orphanWarning + ': ' + ltr(String(preview.orphans.length)) + ' صف بقي في الردود (لم يُرحَّل).</p>'
       : '';
     const partial = res.partialDelete || !res.deleteOk;
+    const headerPending = !!(res.entry && res.entry.pendingHeaderWeek);
+    const title = partial
+      ? '⚠ الترحيل والأرشيف مكتملان — الحذف لم يكتمل'
+      : (headerPending
+        ? '⚠ الترحيل والحذف مكتملان — ترويسة الأسبوع الجديد بانتظار التحديث'
+        : '✅ تم الترحيل بنجاح');
     showModal({
-      title: partial ? '⚠ الترحيل والأرشيف مكتملان — الحذف لم يكتمل' : '✅ تم الترحيل بنجاح',
+      title,
       body: '<ul class="export-summary">' +
         '<li>الأسبوع: <b>' + escapeHtml(preview.week.label) + '</b></li>' +
         '<li>تم ترحيل <b class="t-green">' + ltr(String(res.verify.expected)) + '</b> سجل إلى الأرشيف (تحقق ' +
           ltr(String(res.verify.found) + '/' + res.verify.expected) + ' ✅)</li>' +
         '<li>أُضيف حديثاً: <b>' + ltr(String(res.appended)) + '</b> · مكرر مُتخطى: <b>' + ltr(String(res.skipped)) + '</b>' +
-          (res.headerWritten ? ' · كُتب رأس الملف (Header)' : '') + '</li>' +
+          (res.headerWritten ? ' · كُتب رأس الملف (Header)' : '') +
+          (res.headerAligned ? ' · مطابقة أعمدة الأرشيف بالاسم' : '') + '</li>' +
         '<li>تم حذف <b class="' + (partial ? 't-red' : 't-green') + '">' +
           ltr(String(res.deleted) + ' من ' + res.deleteExpected) + '</b> صف من الردود' +
-          (res.headerPresent ? ' · الترويسة سليمة ✅' : ' · ⚠ الترويسة ناقصة') + '</li>' +
+          (res.headerPresent ? ' · الترويسة سليمة ✅' : ' · ⚠ الترويسة ناقصة') +
+          (res.othersLost ? ' · ⚠ سجلات أخرى مفقودة=' + ltr(String(res.othersLost)) : ' · سجلات أخرى غير مستهدفة بقيت سليمة ✅') + '</li>' +
         (res.nextWeek ? '<li>' + CFG.texts.nextWeekReady + ': <b>' + escapeHtml(res.nextWeek.label) + '</b> (' +
-          ltr(res.nextWeek.start + ' → ' + res.nextWeek.end) + ')</li>' : '') +
+          ltr(res.nextWeek.start + ' → ' + res.nextWeek.end) + ')' +
+          (res.headerWeekUpdated ? ' · <b class="t-green">' + CFG.texts.headerWeekUpdated + ' ✅</b>'
+            : (headerPending ? ' · <b class="t-red">' + CFG.texts.headerWeekPending + '</b>' : '')) + '</li>' : '') +
         '<li>الحالة في السجل: <b>' + escapeHtml(res.entry ? res.entry.status : '—') + '</b> · المستخدم: <b>' +
           escapeHtml(res.entry ? res.entry.user : '—') + '</b></li>' +
         '<li>زمن التنفيذ: <b>' + ltr(String(res.ms)) + ' ms</b></li>' +
@@ -296,6 +313,8 @@ async function runMigration(app) {
         (partial ? '<p class="t-red">⚠ الحذف من الردود لم يكتمل (متبقي ' +
           ltr(String(res.remaining != null ? res.remaining : res.deleteExpected - res.deleted)) +
           ') — بياناتك آمنة في الأرشيف، ويمكنك إعادة المحاولة من سجل الترحيل.</p>' : '') +
+        (headerPending && !partial ? '<p class="t-red">⚠ ' + escapeHtml(CFG.texts.headerWeekPending) +
+          ' — ردود الأسبوع الجديد ستُسنَد خطأً لـ«' + escapeHtml(preview.week.label) + '» حتى يُحدَّث صف الترويسة.</p>' : '') +
         orphNote,
       actions: [
         { label: 'عرض السجل', cls: 'btn-ghost', onClick: showHistoryModal },
@@ -361,7 +380,7 @@ function doUndo(app) {
       '<p><b>عدد السجلات المرحّلة:</b> ' + ltr(String(entry.records)) + '</p>' +
       '<p><b>تاريخ ووقت الترحيل:</b> ' + ltr(entry.time) + '</p>' +
       '<p class="confirm-text"><b>' + escapeHtml(CFG.texts.undoAsk) + '</b></p>' +
-      '<p class="muted">سيتم: استرجاع السجلات إلى ملف الردود ← التحقق ← حذف سجلات هذه العملية من الأرشيف فقط ← إرجاع الأسبوع السابق ← تحديث الحالة إلى REVERSED. لن تُمس سجلات العمليات السابقة.</p>',
+      '<p class="muted">سيتم: استرجاع السجلات إلى ملف الردود ← التحقق ← حذف سجلات هذه العملية من الأرشيف فقط ← إرجاع ترويسة الردود إن كان الترحيل حدّثها ← تحديث الحالة إلى REVERSED. لن تُمس سجلات العمليات السابقة.</p>',
     actions: [
       { label: CFG.texts.cancel, cls: 'btn-ghost' },
       { label: CFG.texts.undoConfirmAction, cls: 'btn-danger', onClick: async () => runUndo(app) },
@@ -440,8 +459,24 @@ async function doRetry(id, app) {
   if (!app.settings.appsScriptUrl) { toast('اربط Apps Script أولاً (الإعدادات)', 'warn'); go('settings'); return; }
   const res = await retryDelete(entry, app.settings.appsScriptUrl);
   if (res.nothing) toast('لا يوجد حذف متبقي', 'ok');
-  else if (res.ok) toast('✅ اكتمل الحذف المتبقي من الردود', 'ok');
+  else if (res.ok) toast('✅ اكتمل الحذف المتبقي من الردود' + (res.headerWeekUpdated ? ' · ' + CFG.texts.headerWeekUpdated : (res.headerPending ? ' · ' + CFG.texts.headerWeekPending : '')), res.headerPending ? 'warn' : 'ok');
   else toast('لم يكتمل الحذف: ' + (res.error || ('متبقي=' + res.remaining)), 'warn');
+  const root = document.querySelector('#tab-migrate');
+  if (root) {
+    root.querySelector('#m-history').innerHTML = historyHtml();
+    bindHistory(root, app);
+  }
+}
+
+async function doRetryHeader(id, app) {
+  if (!requireAdmin('تجهيز ترويسة الأسبوع الجديد')) return;
+  const entry = migrationList().find((e) => e.id === id);
+  if (!entry || !entry.pendingHeaderWeek) return;
+  if (!app.settings.appsScriptUrl) { toast('اربط Apps Script أولاً (الإعدادات)', 'warn'); go('settings'); return; }
+  const res = await retryHeaderWeek(entry, app.settings.appsScriptUrl);
+  if (res.nothing) toast('لا توجد ترويسة بانتظار التحديث', 'ok');
+  else if (res.ok) toast('✅ ' + CFG.texts.headerWeekUpdated, 'ok');
+  else toast('لم يكتمل تحديث الترويسة: ' + (res.error || res.code), 'warn');
   const root = document.querySelector('#tab-migrate');
   if (root) {
     root.querySelector('#m-history').innerHTML = historyHtml();
