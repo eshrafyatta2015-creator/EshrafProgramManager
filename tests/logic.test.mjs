@@ -68,9 +68,14 @@ ok('1. تحميل المشرفين', master.length === lists.supervisors.length 
 /* 2) تحميل المدارس */
 ok('2. تحميل المدارس', lists.schools.length >= 100, lists.schools.length + ' مدرسة');
 
-/* 3) تحميل البرامج */
-ok('3. تحميل البرامج', admin.records.length > 900 && programs.records.length > 0,
-  'أرشيف=' + admin.records.length + ' حي=' + programs.records.length);
+/* 3) تحميل البرامج — بعد الترحيل قد تكون الردود فارغة بترويسة الأسبوع الجديد (حالة جاهزة) */
+{
+  const readyEmpty = programs.records.length === 0 && programs.headerWeek && programs.header.length > 0;
+  ok('3. تحميل البرامج', admin.records.length > 900 &&
+    (programs.records.length > 0 || readyEmpty),
+    'أرشيف=' + admin.records.length + ' حي=' + programs.records.length +
+    ' · ترويسة=' + (programs.headerWeek && programs.headerWeek.label));
+}
 
 /* 4) اختيار الأسبوع */
 {

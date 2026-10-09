@@ -270,42 +270,43 @@ function deleteRows_(payload) {
 
   var lastCol = Math.max(sh.getLastColumn(), 17);
   var all = sh.getRange(1, 1, lastRow, lastCol).getValues();
-  var tz = ss.getSpreadsheetTimeZone();
+  /* القيم المعروضة (CSV) هي مرجع المطابقة — خلايا Timestamp تواريخ،
+     وتنسيق Utilities.formatDate قد يقل ثانية واحدة عن المعروض/التصدير */
+  var disp = sh.getRange(1, 1, lastRow, lastCol).getDisplayValues();
 
   var want = {};
   for (var i = 0; i < targets.length; i++) {
-    var key = String(targets[i].t == null ? '' : targets[i].t).trim() + '\u0001' + norm_(targets[i].s);
+    var key = String(targets[i].t == null ? '' : targets[i].t).trim() + '' + norm_(targets[i].s);
     want[key] = (want[key] || 0) + 1;
   }
 
   var rowNumbers = [];
   /* نبدأ من الصف 2 — صف 1 (الترويسة) لا يُحذف أبداً، ولا أي صف غير مطابق للمواصفة.
      مطابقة الصيغتين: timestamp أولاً (ردود الاستمارة) أو الاسم أولاً مع طابع زمني في أي عمود
-     (صفوف الأرشيف المطابقة بالاسم) — الصف بلا طابع زمني لا يطابق أي هدف ولا يُحذف.
-     خلايا Timestamp في الاستمارة تواريخ فعلية (Date) تُطبَّع إلى dd/mm/yyyy HH:mm:ss للمطابقة. */
+     (صفوف الأرشيف المطابقة بالاسم) — الصف بلا طابع زمني لا يطابق أي هدف ولا يُحذف. */
   for (var r = 1; r < all.length; r++) {
     var raw = all[r];
-    var cells = cells_(raw);
-    var c0 = cells[0];
-    var c1 = cells[1];
+    var rowDisp = disp[r];
+    var c0 = String(raw[0] == null ? '' : raw[0]).trim();
+    var c1 = String(raw[1] == null ? '' : raw[1]).trim();
     if (!c0 || !c1) continue;
     if (c0.toLowerCase() === 'timestamp' || c0 === MAGIC_HEADER) continue;
-    if (WEEK_RE.test(c0) && !TS_RE.test(c0)) continue;
+    var d0 = String(rowDisp[0] == null ? '' : rowDisp[0]).trim();
+    if (WEEK_RE.test(d0) && !TS_RE.test(d0)) continue;
     var ts = '';
     var name = '';
-    var t0 = tsStr_(raw[0], tz);
-    if (TS_RE.test(t0)) {
-      ts = t0;
+    if (TS_RE.test(d0)) {
+      ts = d0;
       name = c1;
     } else {
       name = c0;
-      for (var q = 1; q < raw.length; q++) {
-        var tq = tsStr_(raw[q], tz);
+      for (var q = 1; q < rowDisp.length; q++) {
+        var tq = String(rowDisp[q] == null ? '' : rowDisp[q]).trim();
         if (TS_RE.test(tq)) { ts = tq; break; }
       }
     }
     if (!ts) continue;
-    var k2 = ts + '\u0001' + norm_(name);
+    var k2 = ts + '' + norm_(name);
     if (want[k2] > 0) {
       rowNumbers.push(r + 1);
       want[k2]--;
@@ -322,9 +323,6 @@ function deleteRows_(payload) {
   return json_({ ok: true, deleted: deleted, expected: expected });
 }
 
-/* ---------------- تحديث تسمية الأسبوع في صف الترويسة (صف 1) فقط ----------------
-   تجهيز الاستمارة للأسبوع الجديد بعد نجاح الترحيل والحذف:
-   لا يُمس أي صف بيانات، ولا تُنشأ ترويسة متكررة، مع قراءة تحقق بعد الكتابة. */
 function setWeekHeader_(payload) {
   var oldLabel = String(payload.oldLabel == null ? '' : payload.oldLabel).trim();
   var newLabel = String(payload.newLabel == null ? '' : payload.newLabel).trim();
@@ -373,5 +371,5 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, service: 'EshrafProgramManager AppendRows v4.2', hint: 'استخدم POST: append | deleteRows | setWeekHeader' });
+  return json_({ ok: true, service: 'EshrafProgramManager AppendRows v4.4', hint: 'استخدم POST: append | deleteRows | setWeekHeader' });
 }
