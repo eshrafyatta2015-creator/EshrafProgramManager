@@ -202,6 +202,17 @@ function cells_(row) {
   return out;
 }
 
+/* تطبيع قيمة خلية إلى نص مفرد — التواريخ الحقيقية (Date) بصيغة dd/mm/yyyy HH:mm:ss
+   لتتطابق مع الطوابع النصية القادمة من قراءة التطبيق للـ CSV */
+function tsStr_(v) {
+  if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return p(v.getDate()) + '/' + p(v.getMonth() + 1) + '/' + v.getFullYear() +
+      ' ' + p(v.getHours()) + ':' + p(v.getMinutes()) + ':' + p(v.getSeconds());
+  }
+  return String(v == null ? '' : v).trim();
+}
+
 /* تطبيع الاسم للمقارنة فقط (كما في التطبيق) */
 function norm_(s) {
   return String(s == null ? '' : s)
@@ -271,9 +282,11 @@ function deleteRows_(payload) {
   var rowNumbers = [];
   /* نبدأ من الصف 2 — صف 1 (الترويسة) لا يُحذف أبداً، ولا أي صف غير مطابق للمواصفة.
      مطابقة الصيغتين: timestamp أولاً (ردود الاستمارة) أو الاسم أولاً مع طابع زمني في أي عمود
-     (صفوف الأرشيف المطابقة بالاسم) — الصف بلا طابع زمني لا يطابق أي هدف ولا يُحذف. */
+     (صفوف الأرشيف المطابقة بالاسم) — الصف بلا طابع زمني لا يطابق أي هدف ولا يُحذف.
+     خلايا Timestamp في الاستمارة تواريخ فعلية (Date) تُطبَّع إلى dd/mm/yyyy HH:mm:ss للمطابقة. */
   for (var r = 1; r < all.length; r++) {
-    var cells = cells_(all[r]);
+    var raw = all[r];
+    var cells = cells_(raw);
     var c0 = cells[0];
     var c1 = cells[1];
     if (!c0 || !c1) continue;
@@ -281,13 +294,15 @@ function deleteRows_(payload) {
     if (WEEK_RE.test(c0) && !TS_RE.test(c0)) continue;
     var ts = '';
     var name = '';
-    if (TS_RE.test(c0)) {
-      ts = c0;
+    var t0 = tsStr_(raw[0]);
+    if (TS_RE.test(t0)) {
+      ts = t0;
       name = c1;
     } else {
       name = c0;
-      for (var q = 1; q < cells.length; q++) {
-        if (TS_RE.test(cells[q])) { ts = cells[q]; break; }
+      for (var q = 1; q < raw.length; q++) {
+        var tq = tsStr_(raw[q]);
+        if (TS_RE.test(tq)) { ts = tq; break; }
       }
     }
     if (!ts) continue;
@@ -359,5 +374,5 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, service: 'EshrafProgramManager AppendRows v4', hint: 'استخدم POST: append | deleteRows | setWeekHeader' });
+  return json_({ ok: true, service: 'EshrafProgramManager AppendRows v4.1', hint: 'استخدم POST: append | deleteRows | setWeekHeader' });
 }

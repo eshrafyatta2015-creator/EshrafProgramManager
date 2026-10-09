@@ -1,6 +1,7 @@
 /* اختبارات المنطق — 22 سيناريو من مواصفات المشروع (بيانات حقيقية + حالات حدية) */
 
 import { createRequire } from 'module';
+import fs from 'node:fs';
 
 const require = createRequire(import.meta.url);
 
@@ -38,10 +39,16 @@ const ok = (name, cond, extra) => {
 };
 
 const NC = '&nc=' + Date.now();
+/* الثوابت أولاً: tests/fixtures/*.csv تُثبّت الحالة بعد آخر ترحيل — تُحدَّث بـ:
+   node tests/fixtures/refresh.mjs  (قراءة حية من الملفات الثلاثة) */
+const loadSheet = async (fixtureName, liveUrl) => {
+  try { return fs.readFileSync(new URL('./fixtures/' + fixtureName, import.meta.url), 'utf8'); }
+  catch (e) { return fetch(liveUrl + NC).then((r) => r.text()); }
+};
 const [listsTxt, adminTxt, programsTxt] = await Promise.all([
-  fetch(CFG.sheets.lists + NC).then((r) => r.text()),
-  fetch(CFG.sheets.admin + NC).then((r) => r.text()),
-  fetch(CFG.sheets.programs + NC).then((r) => r.text()),
+  loadSheet('lists.csv', CFG.sheets.lists),
+  loadSheet('admin.csv', CFG.sheets.admin),
+  loadSheet('programs.csv', CFG.sheets.programs),
 ]);
 
 const lists = M.parseListsCsv(listsTxt);
@@ -51,6 +58,8 @@ const master = M.masterFromLists(lists);
 const unionMaster = M.buildMasterSupervisors(lists, admin.records, programs.records);
 const weeks = M.allWeeks(admin.weeks, programs.headerWeek, programs.records);
 const records = admin.records.concat(programs.records);
+/* ترويسة الأرشيف "القديمة" (قبل عمودي Valid Code/Timestamp) لاختبارات المطابقة */
+const oldArchiveHeader = admin.header.slice(0, 15).concat(['']);
 
 /* 1) تحميل المشرفين (من الملف المرجعي فقط) */
 ok('1. تحميل المشرفين', master.length === lists.supervisors.length && master.length >= 30 && master.every((s) => s.name),
@@ -592,7 +601,7 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
 /* 38) إحصاءات الردود المنهجية: تُشتق من المصدر مباشرة (لا أرقام ثابتة تتغيّر مع الشيت الحيّ) */
 {
   const data = { records, master, programs, admin, weeks };
-  const wk = weeks.find((x) => x.label === '4/10-10/10') || weeks[0];
+  const wk = programs.headerWeek || weeks[0];
   const st = RS.responseStats(data, wk.start);
   const senders = new Set(programs.records.map((r) => r.supervisorNorm));
   const matched = Array.from(senders).filter((k) => master.some((s) => s.nameNorm === k)).length;
@@ -610,7 +619,7 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
 /* 39) لا ردود مفقودة عن شاشة الأسبوع بعد الإصلاح (مفتاح الفرق = صفر) */
 {
   const data = { records, master, programs, admin, weeks };
-  const wk = weeks.find((x) => x.label === '4/10-10/10') || weeks[0];
+  const wk = programs.headerWeek || weeks[0];
   const missing = RS.findMissingResponseRecords(data, wk.start);
   ok('39. الردود المفقودة عن شاشة الأسبوع = صفر',
     missing.length === 0,
@@ -1141,7 +1150,7 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
 {
   const row = ['05/10/2026 09:00:00', 'مشرف الاختبار', 'م1', 'ف1', 'م2', 'ف2', 'م3', 'ف3', 'م4', 'ف4', 'م5', 'ف5', 'م6', 'ف6', 'ملاحظة', 'K-77', 'خطط'];
   row[16] = 'تخطيط';
-  const a = HS.alignRowsToHeader(admin.header, [row]);
+  const a = HS.alignRowsToHeader(oldArchiveHeader, [row]);
   ok('66. مطابقة ترويسة الأرشيف بالاسم + عمودا الكود والطابع الناقصان',
     a.aligned === true && a.headerPatch.length === 1 &&
     a.headerPatch[0].col === 16 && a.headerPatch[0].name.includes('Valid Code') &&
@@ -1175,7 +1184,7 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
       { school: '', activity: '' }, { school: '', activity: '' }, { school: '', activity: '' }],
     notes: '', code: 'K9', source: 'programs',
   };
-  const pl = MS.planMigration({ archive: admin.records, archiveHeader: admin.header, records: [recP], week: wkP, data: null });
+  const pl = MS.planMigration({ archive: admin.records, archiveHeader: oldArchiveHeader, records: [recP], week: wkP, data: null });
   ok('68. الخطة: صفوف الأرشيف بالترويسة الاسمية + sourceRows برموز للاستعادة',
     pl.headerAligned === true && pl.rows.length === 1 &&
     pl.rows[0][0] === master[0].name && pl.rows[0][14] === 'تخطيط' &&
@@ -1230,13 +1239,15 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
 /* محاكاة خوادم Apps Script + ملفات CSV — لا تُمس الملفات الحقيقية */
 const buildMigrationScenario = () => {
   const wk = U.parseWeekLabel('4/10-10/10');
+  /* ترويسة الردود في السيناريو مُعاد تسميتها لأسبوع السيناريو (لا اعتماد على ترويسة الملف الحيّ) */
+  const respHeader = programs.header.map((c) => String(c).split(String(programs.headerWeek && programs.headerWeek.label)).join(wk.label));
   const state = {
     archiveCsv: U.csvSerialize([
-      admin.header,
+      oldArchiveHeader,
       ['هناء إسماعيل خليل الشريف', 'ق1', 'خ1', '', '', '', '', '', '', '', '', '', '', '', 'تخطيط'],
       ['زائر قديم', 'ق2', 'خ2', '', '', '', '', '', '', '', '', '', '', '', 'فعلي'],
     ]),
-    respCsv: U.csvSerialize([programs.header,
+    respCsv: U.csvSerialize([respHeader,
       ['05/10/2026 09:00:00', master[0].name, 'أ1', 'ن1', 'أ2', 'ن2', 'أ3', 'ن3', 'أ4', 'ن4', 'أ5', 'ن5', 'أ6', 'ن6', 'م1', 'K1', 'تخطيط'],
       ['05/10/2026 10:00:00', master[1].name, 'ب1', 'ف1', 'ب2', 'ف2', 'ب3', 'ف3', 'ب4', 'ف4', 'ب5', 'ف5', 'ب6', 'ف6', '', 'K2', 'فعلي'],
       ['20/9/2026 11:00:00', master[2].name, 'ج1', 'خ1', '', '', '', '', '', '', '', '', '', 'أسبوع آخر', '', 'تخطيط'],
@@ -1463,14 +1474,16 @@ const withMockOf = async (sc, fn) => {
 
 /* 76) أثر تحديث الترويسة على إسناد ردود الأسبوع الجديد (سبب الخلل الأصلي) */
 {
-  const hdrNew = programs.header.map((c) => String(c).split('4/10-10/10').join('11/10-17/10'));
-  const rowNew = ['11/10/2026 09:00:00', 'مشرف جديد', 'أ1', 'ن1', '', '', '', '', '', '', '', '', '', '', '', '', 'تخطيط'];
+  const cur = programs.headerWeek;
+  const nxt = WK.nextWeek(cur);
+  const hdrNew = programs.header.map((c) => String(c).split(String(cur.label)).join(nxt.label));
+  const rowNew = [nxt.start.slice(8, 10) + '/' + nxt.start.slice(5, 7) + '/' + nxt.start.slice(0, 4) + ' 09:00:00', 'مشرف جديد', 'أ1', 'ن1', '', '', '', '', '', '', '', '', '', '', '', '', 'تخطيط'];
   const pNew = M.parseProgramsCsv(U.csvSerialize([hdrNew, rowNew]));
   const pOld = M.parseProgramsCsv(U.csvSerialize([programs.header, rowNew]));
   ok('76. بترويسة محدَّثة تُسنَد ردود الأسبوع الجديد لها — وبترويسة قديمة تُسنَد خطأً للسابق',
-    pNew.headerWeek && pNew.headerWeek.start === '2026-10-11' &&
-    pNew.records.length === 1 && pNew.records[0].weekStart === '2026-10-11' &&
-    pOld.records.length === 1 && pOld.records[0].weekStart === '2026-10-04',
+    pNew.headerWeek && pNew.headerWeek.start === nxt.start &&
+    pNew.records.length === 1 && pNew.records[0].weekStart === nxt.start &&
+    pOld.records.length === 1 && pOld.records[0].weekStart === cur.start,
     'جديد=' + (pNew.records[0] || {}).weekStart + ' · قديم=' + (pOld.records[0] || {}).weekStart);
 }
 
