@@ -519,7 +519,7 @@ ok('3. تحميل البرامج', admin.records.length > 900 && programs.record
     t.failKeepResponses === '❌ فشل الترحيل، تم الاحتفاظ ببيانات الردود ولم يتم حذفها.' &&
     t.incompleteKeepResponses === '⚠ لم تكتمل عملية الترحيل. تم الاحتفاظ ببيانات الردود لحمايتها.' &&
     t.alreadyMigrated === '⚠ تم ترحيل هذا الأسبوع مسابقاً' &&
-    t.confirmMigrate === 'تأكيد الترحيل والحذف' &&
+    t.confirmMigrate === 'ترحيل الأسبوع وإعداد أسبوع جديد' &&
     t.nextWeekReady === 'تم إعداد الأسبوع التالي' &&
     t.orphanReview === 'يتطلب مراجعة إدارية',
     'نصوص مطابقة للمواصفة');
@@ -1329,12 +1329,13 @@ const buildMigrationScenario = () => {
   };
   return { state, wk, mockFetch };
 };
-const runExec = (wk, url) => MS.executeMigration({
+const runExec = (wk, url, onStage) => MS.executeMigration({
   preview: { plan: { rows: [['x']] } },
   week: wk,
   data: { master },
   appsScriptUrl: url || 'https://script.exec/t',
   user: 'مدير',
+  onStage,
 });
 const withMockOf = async (sc, fn) => {
   const orig = globalThis.fetch;
@@ -1345,7 +1346,8 @@ const withMockOf = async (sc, fn) => {
 /* 71) مسار النجاح الكامل: إضافة مطابقة ← تحقق ← حذف ← ترويسة أسبوع جديد ← بقاء غير المستهدف */
 {
   const sc = buildMigrationScenario();
-  const res = await withMockOf(sc, () => runExec(sc.wk));
+  const stages = [];
+  const res = await withMockOf(sc, () => runExec(sc.wk, '', (k) => stages.push(k)));
   const progAfter = M.parseProgramsCsv(sc.state.respCsv);
   const adminAfter = M.parseAdminCsv(sc.state.archiveCsv);
   const headerNow = U.csvParse(sc.state.respCsv)[0] || [];
@@ -1367,8 +1369,10 @@ const withMockOf = async (sc, fn) => {
     MS.verifyKeysInArchive(res.entry, adminAfter.records).ok === true &&
     sc.state.appendPayload.headerPatch[0].col === 16 &&
     sc.state.appendPayload.headerExtend.includes('Timestamp') &&
-    sc.state.appendPayload.rows[0][0] === master[0].name,
-    'log=' + log.join('>') + ' · أرشيف=' + adminAfter.records.filter((r) => r.weekStart === '2026-10-04').length);
+    sc.state.appendPayload.rows[0][0] === master[0].name &&
+    stages.join('>') === 'read>columns>migrate>verify>delete>week>ready',
+    'log=' + log.join('>') + ' · مراحل=' + stages.join('>') +
+    ' · أرشيف=' + adminAfter.records.filter((r) => r.weekStart === '2026-10-04').length);
 }
 
 /* 72) فشل الإضافة إلى الأرشيف → لا حذف ولا تحديث ترويسة إطلاقاً */
@@ -1390,11 +1394,12 @@ const withMockOf = async (sc, fn) => {
 {
   const sc = buildMigrationScenario();
   sc.state.failDelete = true;
+  const stages = [];
   let first = null;
   let retry = null;
   let logAfterFirst = null;
   await withMockOf(sc, async () => {
-    first = await runExec(sc.wk);
+    first = await runExec(sc.wk, '', (k) => stages.push(k));
     logAfterFirst = sc.state.log.slice();
     sc.state.failDelete = false;
     retry = await MS.retryDelete(first.entry, 'https://script.exec/t');
@@ -1407,6 +1412,7 @@ const withMockOf = async (sc, fn) => {
     first.entry.status === 'جزئي' && first.entry.pendingDelete.length === 2 &&
     first.headerWeekUpdated === false && !!first.entry.pendingHeaderWeek &&
     !logAfterFirst.includes('setWeekHeader') &&
+    stages.join('>') === 'read>columns>migrate>verify>delete' &&
     retry.ok === true && retry.headerWeekUpdated === true &&
     entryNow.status === 'مكتمل' && !entryNow.pendingDelete && !entryNow.pendingHeaderWeek &&
     entryNow.headerWeekUpdated === true &&
@@ -1414,7 +1420,7 @@ const withMockOf = async (sc, fn) => {
     adminAfter.records.filter((r) => r.weekStart === '2026-10-04').length === 2 &&
     progAfter.records.filter((r) => r.weekStart === '2026-10-04').length === 0 &&
     (U.csvParse(sc.state.respCsv)[0] || []).some((c) => c.includes('11/10-17/10')),
-    'log=' + sc.state.log.join('>') + ' · حالة=' + entryNow.status);
+    'log=' + sc.state.log.join('>') + ' · مراحل=' + stages.join('>') + ' · حالة=' + entryNow.status);
 }
 
 /* 74) الحذف ناجح وتحديث الترويسة يفشل → حالة صادقة + إعادة محاولة مستقلة */

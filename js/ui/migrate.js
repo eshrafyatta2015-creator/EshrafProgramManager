@@ -1,5 +1,5 @@
 /* ترحيل بيانات الأسبوع — المسار الآمن §38:
-   معاينة ← تأكيد الترحيل والحذف ← إضافة للأرشيف ← تحقق ← حذف من الردود ← تحقق ← الأسبوع التالي.
+   معاينة ← ترحيل الأسبوع وإعداد أسبوع جديد ← إضافة للأرشيف ← تحقق ← حذف من الردود ← تحقق ← الأسبوع التالي.
    لا يُحذف أي صف من الردود قبل إثبات وصوله للأرشيف. */
 
 import { CFG } from '../config.js';
@@ -188,10 +188,11 @@ function doRun(app) {
       (nk ? '<li>الأسبوع التالي بعد الترحيل: <b>' + escapeHtml(nk.label) + '</b> (' + ltr(nk.start + ' → ' + nk.end) + ') — '+ CFG.texts.nextWeekReady +
         ' · <b>' + CFG.texts.headerWeekLabel + ' ' + escapeHtml(nk.label) + '</b> (بعد الحذف الناجح)</li>' : '') +
       '<li>عدد المشرفين في البيانات الأساسية: <b>' + ltr(String(p.masterCount)) + '</b></li>' +
-      '<li>عدد السجلات الجديدة التي ستُضاف: <b class="t-green">' + ltr(String(p.kept)) + '</b></li>' +
+      '<li>عدد الردود المراد ترحيلها (جديدة): <b class="t-green">' + ltr(String(p.kept)) + '</b></li>' +
       '<li>سجلات مكررة ستُتخطى: <b>' + ltr(String(p.skipped)) + '</b></li>' +
+      '<li>عدد الردود الموجودة في الأرشيف مسبقاً لهذا الأسبوع: <b>' + ltr(String(p.archiveWeekCount)) + '</b></li>' +
       '<li>التسلسل: <b>إضافة إلى الأرشيف ← تحقق بعدّاد ومفاتيح ← الحذف من الردود ← تحقق من الحذف ← الأسبوع التالي</b></li>' +
-      '<li class="t-red">تنبيه: لن يُحذف أي صف من الردود إلا بعد إثبات وصوله للأرشيف.</li>' +
+      '<li class="t-red">تنبيه: العملية <b>ستحذف الردود المرحّلة من ملف الردود بعد التحقق فقط</b> — ولن يُحذف أي صف قبل إثبات وصوله للأرشيف.</li>' +
       (p.orphans.length
         ? '<li class="t-red">' + CFG.texts.orphanWarning + ': <b>' + ltr(String(p.orphans.length)) + '</b> صف — ' +
           (p.includeOrphans ? 'ستُرحَّل (مؤكَّد) ضمن هذه العملية' : '<b>لن تُرحَّل</b>') + '</li>'
@@ -213,6 +214,36 @@ async function runMigration(app) {
   const root = document.querySelector('#tab-migrate');
   const runBtn = root && root.querySelector('#m-run');
   if (runBtn) runBtn.disabled = true;
+
+  /* المراحل السبع المعروضة أثناء التنفيذ — لا يُعلن النجاح إلا بعد اجتيازها كلها */
+  const STAGES = [
+    ['read', 'قراءة الردود'],
+    ['columns', 'التحقق من الأعمدة'],
+    ['migrate', 'ترحيل البيانات'],
+    ['verify', 'التحقق من الأرشيف'],
+    ['delete', 'حذف الردود القديمة'],
+    ['week', 'تحديث الأسبوع'],
+    ['ready', 'التحقق من جاهزية استقبال الردود'],
+  ];
+  const prog = showModal({
+    title: '⏳ جارٍ التنفيذ: ' + CFG.texts.confirmMigrate,
+    body: '<ul class="export-summary" id="m-stages">' +
+      STAGES.map((s) => '<li data-st="' + s[0] + '">⬜ ' + s[1] + '</li>').join('') +
+      '</ul><p class="muted">لا تُغلق الصفحة — تُعرض النتيجة النهائية بعد اجتياز المراحل.</p>',
+    actions: [],
+  });
+  const stageEls = {};
+  prog.body.querySelectorAll('[data-st]').forEach((el) => { stageEls[el.getAttribute('data-st')] = el; });
+  const onStage = (key) => {
+    const idx = STAGES.findIndex((s) => s[0] === key);
+    if (idx < 0) return;
+    STAGES.forEach((s, i) => {
+      const el = stageEls[s[0]];
+      if (!el) return;
+      el.innerHTML = (i < idx ? '✅ ' : i === idx ? '⏳ ' : '⬜ ') + s[1];
+    });
+  };
+
   try {
     const res = await executeMigration({
       preview,
@@ -221,7 +252,9 @@ async function runMigration(app) {
       appsScriptUrl: app.settings.appsScriptUrl,
       includeOrphans: preview.includeOrphans,
       user: app.role === 'admin' ? 'مدير' : 'عارض',
+      onStage,
     });
+    prog.close();
 
     if (!res.ok) {
       if (!res.logged) logAdd('ترحيل الأسبوع', 'فشل ' + preview.week.label + ': ' + (res.code || '') + ' ' + (res.error || ''));
@@ -328,6 +361,7 @@ async function runMigration(app) {
     if (btn) btn.click();
     return false;
   } catch (e) {
+    prog.close();
     const msg = String((e && e.message) || e);
     logAdd('ترحيل الأسبوع', 'خطأ غير متوقع: ' + msg);
     toast('خطأ غير متوقع أثناء الترحيل: ' + msg, 'error');

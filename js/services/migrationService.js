@@ -117,10 +117,12 @@ export function buildMigratePreview(data, week, opts = {}) {
 
 /* ---------- التنفيذ: إضافة ← تحقق ← حذف ← تحقق ← أسبوع جديد ← سجل ---------- */
 
-export async function executeMigration({ preview, week, data, appsScriptUrl, includeOrphans = false, user = '' }) {
+export async function executeMigration({ preview, week, data, appsScriptUrl, includeOrphans = false, user = '', onStage }) {
   const started = Date.now();
   const wk = week || (preview && preview.week);
   const ms = () => Date.now() - started;
+  /* مراحل التنفيذ المعروضة أثناء العمل (§تنبيه المستخدم: القراءة/الأعمدة/الترحيل/التحقق/الحذف/الأسبوع/الجاهزية) */
+  const stage = (key) => { try { if (onStage) onStage(key); } catch (e) { /* لا يعطّل التنفيذ */ } };
 
   if (!preview || !preview.plan || !preview.plan.rows.length) {
     return { ok: false, code: 'EMPTY', error: 'لا توجد سجلات جديدة للترحيل.', ms: ms(), week: wk, deleteAttempted: false, logged: true };
@@ -132,6 +134,7 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
   /* مراحل 1-4: قراءة طازجة + مطابقة الأسماء + منع التكرار (قد تغيّر الملفان منذ المعاينة) */
   let freshArchive;
   let freshResponses;
+  stage('read');
   try {
     freshArchive = await fetchArchiveCsv();
     freshResponses = await fetchResponsesCsv();
@@ -161,12 +164,14 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
     return { ok: false, code, error, ms: ms(), week: wk, deleteAttempted: false, logged: true };
   }
 
+  stage('columns');
   const beforeWeekCount = freshArchive.records.filter((r) => r.weekStart === wk.start).length;
   const orphNote = freshOrphans.length && !includeOrphans
     ? ' · يتيمة غير مرحّلة=' + freshOrphans.length
     : (includeOrphans && freshOrphans.length ? ' · يتيمة (مع تأكيد)=' + freshOrphans.length : '');
 
   /* المرحلة 5: الإضافة (الأرشيف فقط) — بالصفوف المطابقة أسماء أعمدة الترويسة */
+  stage('migrate');
   const written = await appendData({
     rows: plan.rows,
     markerRow: plan.keep[0].supervisor,
@@ -183,6 +188,7 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
   }
 
   /* المراحل 6-7: إعادة قراءة الأرشيف والتحقق + مقارنة عدد السجلات قبل/بعد */
+  stage('verify');
   let verify;
   try {
     const after = await fetchArchiveCsv();
@@ -229,6 +235,7 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
   const nk = nextWeek(wk);
   const pendingHeaderWeek = nk ? { oldLabel: wk.label, newLabel: nk.label } : null;
 
+  stage('delete');
   const del = await deleteResponseRows({ rows: delTargets, appsScriptUrl });
   if (!del.ok) {
     const entry = saveEntry({
@@ -291,6 +298,7 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
   }
 
   const deleteOk = delVerify.ok;
+  stage('week');
 
   /* المرحلة 10: تحديث ترويسة الردود إلى الأسبوع الجديد — صف الترويسة فقط، وبعد نجاح الحذف والتحقق */
   let headerRes = null;
@@ -331,6 +339,7 @@ export async function executeMigration({ preview, week, data, appsScriptUrl, inc
     ' · الحالة=' + entry.status + orphNote,
     { op: 'ترحيل', week: wk.label, count: written.appended, user: user || '—', status: entry.status });
 
+  stage('ready');
   return {
     ok: true,
     appended: written.appended,
